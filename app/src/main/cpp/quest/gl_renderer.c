@@ -191,13 +191,14 @@ static const float kQuadVerts[] = {
 };
 
 // World-locked panel: 2.56m x 1.6m (matches doom 640x400 aspect), pos+uv.
+// UVs are V-flipped because doom texel row 0 (texture v=0) is the top row.
 static const float kWorldQuadVerts[] = {
-    -1.28f, -0.8f, 0.f,  0.f, 0.f,
-     1.28f, -0.8f, 0.f,  1.f, 0.f,
-    -1.28f,  0.8f, 0.f,  0.f, 1.f,
-     1.28f, -0.8f, 0.f,  1.f, 0.f,
-     1.28f,  0.8f, 0.f,  1.f, 1.f,
-    -1.28f,  0.8f, 0.f,  0.f, 1.f,
+    -1.28f, -0.8f, 0.f,  0.f, 1.f,
+     1.28f, -0.8f, 0.f,  1.f, 1.f,
+    -1.28f,  0.8f, 0.f,  0.f, 0.f,
+     1.28f, -0.8f, 0.f,  1.f, 1.f,
+     1.28f,  0.8f, 0.f,  1.f, 0.f,
+    -1.28f,  0.8f, 0.f,  0.f, 0.f,
 };
 
 // unit cube centered at origin, 36 verts (12 tris), side = 1
@@ -431,10 +432,39 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
         glBindVertexArray(0);
         glDepthMask(GL_TRUE);
     } else {
-        // world-locked panel, fixed pose in app space (never VIEW)
-        Mat4 model = mat4_identity();
-        model.m[13] = 1.45f;   // ~chest/eye height in STAGE space
-        model.m[14] = -2.4f;   // 2.4 m in front of the play-area origin
+        // World-locked panel: placed once, in front of wherever the user was
+        // facing when it spawned (yaw only — never re-anchored, never VIEW).
+        // Works whether appSpace is STAGE (floor origin) or LOCAL (head
+        // origin): the pose is derived from the first located head pose.
+        if (!r->panelPlaced) {
+            XrQuaternionf q = view->pose.orientation;
+            XrVector3f hp = view->pose.position;
+            // forward = q * (0,0,-1), flattened to XZ
+            float fx = -2.0f * (q.y * q.w + q.x * q.z);
+            float fz = -1.0f + 2.0f * (q.x * q.x + q.y * q.y);
+            float fl = sqrtf(fx * fx + fz * fz);
+            if (fl > 1e-4f) { fx /= fl; fz /= fl; }
+            float px = hp.x + fx * 2.4f;
+            float py = hp.y - 0.1f;
+            float pz = hp.z + fz * 2.4f;
+            // rotate the quad to face the user (yaw of the flattened forward)
+            // quad +Z is its front face; it must point opposite the
+            // user->panel direction (back at the user), so yaw on -forward
+            float yaw = atan2f(-fx, -fz);
+            float c = cosf(yaw), s = sinf(yaw);
+            Mat4 m = mat4_identity();
+            m.m[0] = c;  m.m[2] = -s;
+            m.m[8] = s;  m.m[10] = c;
+            m.m[12] = px;
+            m.m[13] = py;
+            m.m[14] = pz;
+            memcpy(r->panelModel, m.m, sizeof(r->panelModel));
+            r->panelPlaced = true;
+            LOGI("panel placed at (%.2f, %.2f, %.2f) yaw %.1f deg",
+                 px, py, pz, yaw * 57.29578f);
+        }
+        Mat4 model;
+        memcpy(model.m, r->panelModel, sizeof(model.m));
         glEnable(GL_DEPTH_TEST);
         glUseProgram(r->worldProgram);
         glUniformMatrix4fv(glGetUniformLocation(r->worldProgram, "uViewProj"),
@@ -533,6 +563,11 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // Ensure all rendering to the swapchain image is complete before the
+    // compositor reads it — without this the runtime can present a black or
+    // partially-rendered texture.
+    glFinish();
 
     e->projViews[eye].pose = view->pose;
     e->projViews[eye].fov = view->fov;

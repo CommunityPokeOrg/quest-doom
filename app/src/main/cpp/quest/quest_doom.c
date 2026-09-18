@@ -296,7 +296,16 @@ void android_main(struct android_app* app) {
 
         // In-level gameplay is first-person; title/menu/intermission frames go
         // to the world-locked panel so 2D content is never glued to the HMD.
-        glr_set_immersive(&g_renderer, g_doomStarted && VR_InLevel());
+        {
+            static int lastImmersive = -1;
+            int imm = g_doomStarted && VR_InLevel();
+            if (imm != lastImmersive) {
+                LOGI("render mode -> %s", imm ? "immersive (in-level)"
+                                            : "world panel (menu/title)");
+                lastImmersive = imm;
+            }
+            glr_set_immersive(&g_renderer, imm);
+        }
 
         if (viewsOk) {
             for (int eye = 0; eye < g_xr.viewCount; eye++)

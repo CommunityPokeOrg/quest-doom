@@ -358,7 +358,11 @@ static void handle_xr_event(XrEngine* e, XrEventDataBuffer* ev) {
             XrEventDataSessionStateChanged* se =
                 (XrEventDataSessionStateChanged*)ev;
             e->sessionState = se->state;
-            LOGI("Session state -> %d", se->state);
+            static const char* names[] = {
+                "UNKNOWN", "IDLE", "READY", "SYNCHRONIZED", "VISIBLE",
+                "FOCUSED", "STOPPING", "LOSS_PENDING", "EXITING"};
+            LOGI("Session state -> %s",
+                 se->state >= 0 && se->state <= 8 ? names[se->state] : "?");
             switch (se->state) {
                 case XR_SESSION_STATE_READY: {
                     XrSessionBeginInfo bi = {
@@ -368,9 +372,12 @@ static void handle_xr_event(XrEngine* e, XrEventDataBuffer* ev) {
                     };
                     XrResult r = xrBeginSession(e->session, &bi);
                     if (XR_FAILED(r))
-                        LOGE("xrBeginSession: %s", xr_result_string(r));
-                    else
+                        LOGE("xrBeginSession FAILED: %s",
+                             xr_result_string(r));
+                    else {
                         e->sessionRunning = true;
+                        LOGI("xrBeginSession OK, session running");
+                    }
                     break;
                 }
                 case XR_SESSION_STATE_STOPPING:
@@ -419,14 +426,24 @@ bool xr_begin_frame(XrEngine* e) {
 
     XrFrameWaitInfo waitInfo = {.type = XR_TYPE_FRAME_WAIT_INFO};
     e->frameState.type = XR_TYPE_FRAME_STATE;
-    if (XR_FAILED(xrWaitFrame(e->session, &waitInfo, &e->frameState)))
+    XrResult r = xrWaitFrame(e->session, &waitInfo, &e->frameState);
+    if (XR_FAILED(r)) {
+        if (r != XR_TIMEOUT_EXPIRED)
+            LOGE("xrWaitFrame: %s", xr_result_string(r));
         return false;
+    }
 
     XrFrameBeginInfo beginInfo = {.type = XR_TYPE_FRAME_BEGIN_INFO};
-    if (XR_FAILED(xrBeginFrame(e->session, &beginInfo)))
+    r = xrBeginFrame(e->session, &beginInfo);
+    if (XR_FAILED(r)) {
+        LOGE("xrBeginFrame: %s", xr_result_string(r));
         return false;
+    }
 
     e->frameBegun = true;
+    if (++e->frameCount % 120 == 1)
+        LOGI("frame #%llu shouldRender=%d", (unsigned long long)e->frameCount,
+             e->frameState.shouldRender);
     return true;
 }
 
@@ -444,7 +461,10 @@ void xr_end_frame(XrEngine* e, XrCompositionLayerBaseHeader** layers,
                       ? (const XrCompositionLayerBaseHeader* const*)layers
                       : NULL,
     };
-    xrEndFrame(e->session, &endInfo);
+    XrResult r = xrEndFrame(e->session, &endInfo);
+    if (XR_FAILED(r) || (e->frameCount - 1) % 120 == 0)
+        LOGI("xrEndFrame: %s layers=%u", xr_result_string(r),
+             endInfo.layerCount);
 }
 
 bool xr_locate_views(XrEngine* e) {
@@ -457,11 +477,18 @@ bool xr_locate_views(XrEngine* e) {
     XrViewState viewState = {.type = XR_TYPE_VIEW_STATE};
     uint32_t count = 0;
     for (int i = 0; i < e->viewCount; i++) e->views[i].type = XR_TYPE_VIEW;
-    if (XR_FAILED(xrLocateViews(e->session, &locateInfo, &viewState,
-                              e->viewCount, &count, e->views)))
+    XrResult r = xrLocateViews(e->session, &locateInfo, &viewState,
+                               e->viewCount, &count, e->views);
+    if (XR_FAILED(r)) {
+        LOGE("xrLocateViews: %s", xr_result_string(r));
         return false;
-    return (viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) &&
-           (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
+    }
+    bool ok = (viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) &&
+              (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
+    if (!ok && (e->frameCount % 120) == 1)
+        LOGW("view pose flags incomplete: 0x%x",
+             (unsigned)viewState.viewStateFlags);
+    return ok;
 }
 
 GLuint xr_acquire_eye_image(XrEngine* e, int i, uint32_t* index) {

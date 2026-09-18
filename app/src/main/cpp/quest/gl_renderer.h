@@ -25,6 +25,8 @@ typedef struct {
     GLuint depthRbo;      // depth attachment matching swapchain size
     int    depthW, depthH;
     bool   immersive;     // true => first-person fullscreen; false => panel
+    bool   panelPlaced;   // world-locked panel pose computed
+    float  panelModel[16];
 
     float jointPos[GLR_MAX_JOINTS][3];
     int   jointsVisible[2];

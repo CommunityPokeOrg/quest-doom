@@ -64,6 +64,7 @@ typedef struct {
 
     XrFrameState frameState;
     bool frameBegun;
+    uint64_t frameCount;
 
     bool handTrackingExt;  // XR_EXT_hand_tracking advertised by runtime
 } XrEngine;
