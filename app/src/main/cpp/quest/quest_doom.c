@@ -17,6 +17,9 @@
 
 #include "../doomgeneric/doomgeneric.h"
 #include "../doomgeneric/doomkeys.h"
+#include "../doomgeneric/doomstat.h"
+#include "../doomgeneric/d_player.h"
+#include "../doomgeneric/p_mobj.h"
 #include "../doomgeneric/vr_doom.h"
 #include "xr_engine.h"
 #include "xr_input.h"
@@ -161,6 +164,9 @@ void DG_SetWindowTitle(const char* title) { (void)title; }
 // Pose extraction: quaternion -> yaw/pitch (forward = -Z in XR space)
 // ---------------------------------------------------------------------------
 
+// Latest head pose in app space (for the true-3D world camera).
+static float s_headX, s_headY, s_headZ, s_headYawDeg;
+
 static void quat_to_yawpitch(XrQuaternionf q, float* yawDeg, float* pitchDeg) {
     float fx = -2.0f * (q.y * q.w + q.x * q.z);
     float fy =  2.0f * (q.x * q.w - q.y * q.z);
@@ -184,6 +190,10 @@ static void update_vr_poses(void) {
 
     float yaw, pitch;
     quat_to_yawpitch(headLoc.pose.orientation, &yaw, &pitch);
+    s_headX = headLoc.pose.position.x;
+    s_headY = headLoc.pose.position.y;
+    s_headZ = headLoc.pose.position.z;
+    s_headYawDeg = yaw;
     VR_SetHeadPose(headLoc.pose.position.x, headLoc.pose.position.y,
                    headLoc.pose.position.z, yaw, pitch);
 
@@ -296,20 +306,48 @@ void android_main(struct android_app* app) {
 
         // In-level gameplay is first-person; title/menu/intermission frames go
         // to the world-locked panel so 2D content is never glued to the HMD.
+        // In-level, true-3D GL world geometry replaces the framebuffer quad
+        // unless the automap or menu is up (those draw in the software frame).
+        int inLevel = g_doomStarted && VR_InLevel();
+        int worldMode = inLevel && !automapactive && !menuactive;
         {
-            static int lastImmersive = -1;
-            int imm = g_doomStarted && VR_InLevel();
-            if (imm != lastImmersive) {
-                LOGI("render mode -> %s", imm ? "immersive (in-level)"
-                                            : "world panel (menu/title)");
-                lastImmersive = imm;
+            static int lastMode = -1;
+            int mode = worldMode ? 2 : inLevel;
+            if (mode != lastMode) {
+                LOGI("render mode -> %s",
+                     mode == 2 ? "true-3D world geometry (in-level)"
+                     : mode    ? "immersive quad (automap/menu in-level)"
+                               : "world panel (menu/title)");
+                lastMode = mode;
             }
-            glr_set_immersive(&g_renderer, imm);
+            glr_set_immersive(&g_renderer, inLevel);
+            glr_set_world_mode(&g_renderer, worldMode);
+        }
+
+        mobj_t* mo = inLevel ? players[consoleplayer].mo : NULL;
+        if (worldMode && mo) {
+            glr_world_frame_camera(&g_renderer,
+                                   (float)mo->x / 65536.0f,
+                                   (float)mo->y / 65536.0f);
+            glr_world_begin_frame(&g_renderer);
         }
 
         if (viewsOk) {
-            for (int eye = 0; eye < g_xr.viewCount; eye++)
+            for (int eye = 0; eye < g_xr.viewCount; eye++) {
+                if (worldMode && mo) {
+                    VR_SelectEye(eye);  // refresh per-eye vr_viewofs_*
+                    float camX = (float)(mo->x + vr_viewofs_x) / 65536.0f;
+                    float camY = (float)(mo->y + vr_viewofs_y) / 65536.0f;
+                    float camZ = (float)(players[consoleplayer].viewz
+                                         + vr_viewofs_z) / 65536.0f;
+                    float moAng = (float)((double)mo->angle
+                                          * (360.0 / 4294967296.0));
+                    glr_world_camera(&g_renderer,
+                                     s_headX, s_headY, s_headZ, s_headYawDeg,
+                                     camX, camY, camZ, moAng);
+                }
                 glr_draw_eye(&g_renderer, &g_xr, eye);
+            }
         }
 
         XrCompositionLayerProjection proj = {

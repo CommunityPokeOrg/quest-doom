@@ -5,6 +5,7 @@
 #pragma once
 
 #include "xr_engine.h"
+#include "gl_world.h"
 
 #define GLR_MAX_JOINTS 52  // 2 hands x 26 XR hand joints
 
@@ -24,7 +25,9 @@ typedef struct {
     GLuint fbo;
     GLuint depthRbo;      // depth attachment matching swapchain size
     int    depthW, depthH;
-    bool   immersive;     // true => first-person fullscreen; false => panel
+    bool   immersive;     // true => first-person; false => panel
+    bool   worldMode;     // in-level: render real 3D level geometry
+    GlWorld* world;       // true-3D level geometry renderer
     bool   panelPlaced;   // world-locked panel pose computed
     float  panelModel[16];
 
@@ -41,6 +44,14 @@ void glr_set_joints(GlRenderer* r, const float* pos, int count,
                     const int* visible);
 // true => doom frame fills the eye view; false => world-locked quad.
 void glr_set_immersive(GlRenderer* r, bool immersive);
+// true-3D level geometry controls (in-level only).
+void glr_set_world_mode(GlRenderer* r, bool enabled);
+bool glr_world_active(const GlRenderer* r);
+void glr_world_begin_frame(GlRenderer* r);
+void glr_world_frame_camera(GlRenderer* r, float camXu, float camYu);
+void glr_world_camera(GlRenderer* r,
+                      float headX, float headY, float headZ, float headYawDeg,
+                      float camXu, float camYu, float camZu, float moAngleDeg);
 // Render into the acquired swapchain image for eye `e` (0=left,1=right).
 void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye);
 void glr_shutdown(GlRenderer* r);

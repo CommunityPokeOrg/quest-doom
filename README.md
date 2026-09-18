@@ -4,22 +4,29 @@ DOOM running on Meta Quest standalone VR headsets (Quest 2 / Pro / 3 / 3S),
 built on the [doomgeneric](https://github.com/ozkl/doomgeneric) engine with an
 OpenXR + Android NDK backend.
 
-This is a fully immersive port: in-level gameplay is first-person — the DOOM
-software renderer runs once per eye (real IPD separation into separate per-eye
-swapchains), 6DOF head tracking drives the in-game camera, and the right-hand
-controller aim is decoupled from view pitch for weapon aiming. Non-level
-content (title, menus, intermissions, demo playback) renders on a
-world-locked panel at a fixed pose in the app space — never glued to the HMD.
-Meta's `XR_EXT_hand_tracking` adds full gesture controls with a tracked
-skeleton (26 joints + bone segments per hand). The shareware `doom1.wad` is
+In-level gameplay renders the map as **real GLES3 3D geometry**: walls,
+floors and ceilings are triangle meshes built per-frame from the parsed level
+(sectors / linedefs / subsectors / segs), and monsters/items/enemies are
+billboarded sprite quads — all through true per-eye perspective view/projection
+matrices with full 6DOF head tracking (real pitch and roll, no Y-shear). The
+doomgeneric software renderer still runs underneath for gameplay logic,
+automaps and menus; it also drives non-level content (title, menus,
+intermissions, demos) on a world-locked panel in app space — never glued to
+the HMD. The right-hand controller aim stays decoupled from view pitch for
+weapon aiming, and `XR_EXT_hand_tracking` adds a tracked skeleton (26 joints +
+bone segments per hand) plus gesture controls. The shareware `doom1.wad` is
 bundled, so it plays out of the box.
+
+This 3D-geometry renderer is an **incremental prototype** — see Known
+limitations for what's still missing (HUD/weapon viewmodel, sky domes,
+visplane-style sprite clipping).
 
 ## Controls (Oculus Touch)
 
 | Input | Action |
 |---|---|
 | Head yaw | Turn (your body follows your gaze) |
-| Head pitch | Look up/down (Y-shear, see limitations) |
+| Head pitch | Look up/down (true pitch in the 3D world renderer) |
 | Head position | Lean / peek around corners (clamped ±0.75 m) |
 | Right controller aim pitch | Weapon sprite pitch, decoupled from view |
 | Left stick | Move forward/back, strafe left/right |
@@ -144,8 +151,14 @@ app/src/main/cpp/
                   key queue, pose extraction (head/eye/aim), stdout->logcat
     xr_engine.c   OpenXR instance/session/spaces (incl. XR_EXT_hand_tracking
                   enumeration), EGL+GLES3 context, per-eye swapchains
-    gl_renderer.c per-eye doom frame textures + instanced joint cubes, drawn
-                  into the acquired swapchain image with real view/FOV/projection
+    gl_renderer.c per-eye compositing: world geometry, doom-frame panel,
+                  tracked-hand skeleton, drawn into the acquired swapchain
+                  image with real view/FOV/projection
+    gl_world.c    true-3D level renderer: builds GL triangles from doomgeneric
+                  map data (wall quads from segs, floor/ceiling fans from
+                  subsector rings, billboard sprites from mobj thinkers),
+                  decodes WAD textures/flats/patches via PLAYPAL, and anchors
+                  the doom world onto the real head pose in app space
     xr_input.c    OpenXR action system -> DOOM key events (+haptics), aim-pose
                   action space for the right controller
     xr_hands.c    XR_EXT_hand_tracking: 26 joints/hand, pinch + palm-up
@@ -155,7 +168,20 @@ app/src/main/cpp/
 
 ### How the VR layer works
 
-DOOM's software renderer is column-based with a 2D map camera, so true 6DOF is
+**3D world path (in-level):** `gl_world.c` rebuilds the level as GL triangles
+every frame from the engine's live level globals — wall quads from segs
+(upper/lower/mid splits from front vs back sector heights), floor/ceiling
+triangle fans from each subsector's convex seg ring, and cylindrical billboard
+quads for every `P_MobjThinker` thinker (with the correct 8-way sprite
+rotation). DOOM wall textures, flats and sprite patches are decoded to GL
+textures via PLAYPAL and cached; sector `lightlevel` shades the geometry;
+masked midtextures and sprites use an alpha-test pass. A doom→app-space model
+matrix anchors the world so the in-game camera lands exactly on the tracked
+head pose, then the real `xrLocateViews` pose+FOV per eye supplies the view
+transform — true 6DOF with real IPD, pitch and roll.
+
+**Software path (gameplay + 2D content):** DOOM's software renderer is
+column-based with a 2D map camera, so on the framebuffer path true 6DOF is
 approximated:
 
 - **Head yaw** is accumulated into `player->mo->angle` as deltas, so movement
@@ -180,17 +206,19 @@ approximated:
 
 - No audio yet (doomgeneric sound modules are compiled out; PRs welcome —
   `FEATURE_SOUND` + an AAudio/OpenSL backend is the obvious next step).
-- Pitch is Y-shear, not true projection pitch: the world stays vertically
-  aligned and the visible range is limited (±60 px ≈ ±18°). Walls are drawn
-  straight-vertical, so looking far up/down still shows a flat horizon edge.
+- **3D prototype gaps**: no HUD/status bar or weapon viewmodel in the 3D view
+  yet (they live in the software frame — shown when the automap/menu opens);
+  sky ceilings render as void (no sky dome yet); sprites are not clipped by
+  walls/floors per-column like visplanes; no mipmaps; texture pegging
+  (`ML_DONTPEGTOP`/`BOTTOM`) is approximated; geometry is rebuilt per frame
+  rather than cached with dirty-tracking.
 - Weapon aiming is pitch-only; aim *yaw* does not turn the gun independently
   of your head — DOOM's hitscan always originates at the player.
 - Hand tracking gestures are discrete (pinch = tap, palm stick = binary
   directions), not analog. If tracking drops mid-gesture, held keys are
   released.
-- Stereo renders the full scene twice per tick; on the 640×400 framebuffer
-  this is cheap, but the software renderer was never built for this so
-  oddities may appear on-map.
+- The software renderer still runs every tick alongside the GL world path
+  (needed for automap/menus), so there is some duplicated frame cost.
 
 ## License
 

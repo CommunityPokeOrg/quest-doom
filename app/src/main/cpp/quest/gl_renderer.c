@@ -356,6 +356,7 @@ bool glr_init(GlRenderer* r) {
     build_world_quad(r);
     build_cubes(r);
     glGenFramebuffers(1, &r->fbo);
+    glw_init(&r->world);   // non-fatal; quad path remains the fallback
     return true;
 }
 
@@ -383,6 +384,30 @@ void glr_set_joints(GlRenderer* r, const float* pos, int count,
 }
 
 void glr_set_immersive(GlRenderer* r, bool immersive) { r->immersive = immersive; }
+
+void glr_set_world_mode(GlRenderer* r, bool enabled) {
+    r->worldMode = enabled;
+}
+
+bool glr_world_active(const GlRenderer* r) {
+    return r->immersive && r->worldMode && r->world && glw_available(r->world);
+}
+
+void glr_world_begin_frame(GlRenderer* r) {
+    if (r->world) glw_begin_frame(r->world);
+}
+
+void glr_world_frame_camera(GlRenderer* r, float camXu, float camYu) {
+    if (r->world) glw_set_frame_camera(r->world, camXu, camYu);
+}
+
+void glr_world_camera(GlRenderer* r,
+                      float headX, float headY, float headZ, float headYawDeg,
+                      float camXu, float camYu, float camZu, float moAngleDeg) {
+    if (r->world)
+        glw_set_camera(r->world, headX, headY, headZ, headYawDeg,
+                       camXu, camYu, camZu, moAngleDeg);
+}
 
 // Depth renderbuffer matching the swapchain dimensions (depth-test for
 // world-locked content; swapped only when size changes).
@@ -415,13 +440,16 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     Mat4 viewMat = mat4_invert_rigid(mat4_from_pose(view->pose));
-    Mat4 projMat = mat4_projection(view->fov, 0.01f, 100.0f);
+    Mat4 projMat = mat4_projection(view->fov, 0.01f, 600.0f);
     Mat4 vp = mat4_mul(projMat, viewMat);
 
     // --- doom frame ---
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, r->doomTex[eye]);
-    if (r->immersive) {
+    if (glr_world_active(r)) {
+        // true-3D level geometry (walls/flats/sprites as GL triangles)
+        glw_draw(r->world, vp.m);
+    } else if (r->immersive) {
         // first-person: the texture IS the eye view — no pose applied
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
