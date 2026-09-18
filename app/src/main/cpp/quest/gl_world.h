@@ -23,6 +23,8 @@ void glw_begin_frame(GlWorld* w);
 
 // True while a level is loaded and geometry was built.
 bool glw_available(const GlWorld* w);
+// Why glw_begin_frame produced nothing (NULL when fine).
+const char* glw_fail_reason(const GlWorld* w);
 
 // Head-centred camera position (doom units) for sprite facing; call before
 // glw_begin_frame each frame.

@@ -47,6 +47,7 @@ void glr_set_immersive(GlRenderer* r, bool immersive);
 // true-3D level geometry controls (in-level only).
 void glr_set_world_mode(GlRenderer* r, bool enabled);
 bool glr_world_active(const GlRenderer* r);
+const char* glr_world_fail(const GlRenderer* r);
 void glr_world_begin_frame(GlRenderer* r);
 void glr_world_frame_camera(GlRenderer* r, float camXu, float camYu);
 void glr_world_camera(GlRenderer* r,

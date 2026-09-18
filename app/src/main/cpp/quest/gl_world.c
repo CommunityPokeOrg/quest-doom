@@ -195,6 +195,9 @@ struct GlWorld {
     int built;        // geometry built this level
     int lastLevelKey;
     float camX, camY; // doom units, for sprite facing
+    int statWalls, statFlats, statSprites;
+    unsigned long statFrame;
+    const char* fail;
 };
 
 static void palette_init(GlWorld* w) {
@@ -357,6 +360,7 @@ static void emit_wall(Mesh* m, GlWorld* w,
     };
     mesh_quad(m, q);
     mesh_bump_count(m, 6);
+    w->statWalls++;
 }
 
 static void build_walls(GlWorld* w, Mesh* m) {
@@ -446,6 +450,7 @@ static void build_flats(GlWorld* w, Mesh* m) {
             }
         }
         if (np < 3) continue;
+        int tris = np - 2;
 
         float cx = 0, cy = 0;
         for (int k = 0; k < np; k++) { cx += pts[k][0]; cy += pts[k][1]; }
@@ -479,6 +484,7 @@ static void build_flats(GlWorld* w, Mesh* m) {
                     m->v[m->vn++] = t[2];
                     mesh_bump_count(m, 3);
                 }
+                w->statFlats += tris;
             }
         }
         if (sec->ceilingpic != skyflatnum) {
@@ -496,6 +502,7 @@ static void build_flats(GlWorld* w, Mesh* m) {
                         pts[k][0] / 64.f, pts[k][1] / 64.f, l, l, l, 1.f};
                     mesh_bump_count(m, 3);
                 }
+                w->statFlats += tris;
             }
         }
     }
@@ -560,6 +567,7 @@ static void build_sprites(GlWorld* w, Mesh* m) {
         };
         mesh_quad(m, q);
         mesh_bump_count(m, 6);
+        w->statSprites++;
     }
 }
 
@@ -594,14 +602,28 @@ bool glw_available(const GlWorld* w) {
     return w && w->built;
 }
 
+const char* glw_fail_reason(const GlWorld* w) {
+    return w ? w->fail : "no glw instance";
+}
+
 void glw_begin_frame(GlWorld* w) {
     w->built = 0;
-    if (!w || !sectors || numsectors <= 0 || !subsectors || !segs) return;
-    if (!sprites || numsprites <= 0) return;
-    if (!texturetranslation || !flattranslation) return;
+    if (!w) { return; }
+    w->fail = NULL;
+    if (!sectors || numsectors <= 0 || !subsectors || !segs) {
+        w->fail = "no level data";
+        return;
+    }
+    if (!sprites || numsprites <= 0) { w->fail = "no sprites"; return; }
+    if (!texturetranslation || !flattranslation) {
+        w->fail = "no texture tables";
+        return;
+    }
 
     palette_init(w);
-    if (!w->palette) return;
+    if (!w->palette) { w->fail = "no PLAYPAL"; return; }
+
+    w->statWalls = w->statFlats = w->statSprites = 0;
 
     Mesh* m = &w->mesh;
     m->vn = 0;
@@ -615,14 +637,14 @@ void glw_begin_frame(GlWorld* w) {
     build_sprites(w, m);
 
     w->built = (m->vn > 0);
+    if (!w->built) { w->fail = "empty mesh"; return; }
 
-    int key = numsubsectors * 100000 + numsegs;
-    if (w->built && key != w->lastLevelKey) {
-        w->lastLevelKey = key;
-        LOGI("glw: 3D world built verts=%d ranges=%d "
-             "(subsectors=%d segs=%d sectors=%d glTex=%d)",
-             m->vn, m->rn, numsubsectors, numsegs, numsectors, w->ntex);
-    }
+    w->statFrame++;
+    if ((w->statFrame % 240) == 1 || w->statFrame == 1)
+        LOGI("QuestDOOM: RENDER_MODE: 3D_WORLD (drawn %d walls, %d flats, "
+             "%d sprites | verts=%d ranges=%d glTex=%d)",
+             w->statWalls, w->statFlats, w->statSprites, m->vn, m->rn,
+             w->ntex);
 }
 
 // Sprite-facing camera (head-centred, doom map units). Call before

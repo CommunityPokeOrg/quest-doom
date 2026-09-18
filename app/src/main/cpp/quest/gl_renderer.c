@@ -80,11 +80,15 @@ static Mat4 mat4_invert_rigid(Mat4 t) {
 // view transform is applied — this is first-person, not a head-locked window.
 // Byte swizzle: DOOM pixels are little-endian 0x00RRGGBB words uploaded as
 // GL_RGBA bytes -> B,G,R,0.
+// The OpenXR compositor samples swapchain images top-left-origin while GL
+// writes bottom-up, so every path renders Y-flipped (projection Y is negated
+// for 3D content; this clip-space quad is left unflipped so its texel row 0
+// lands in texture row 0 = compositor top).
 static const char* kQuadVert =
     "#version 300 es\n"
     "layout(location=0) in vec2 aPos;\n"
     "out vec2 vUV;\n"
-    "void main() { vUV = aPos * 0.5 + 0.5; vUV.y = 1.0 - vUV.y; "
+    "void main() { vUV = aPos * 0.5 + 0.5; "
     "  gl_Position = vec4(aPos, 0.0, 1.0); }\n";
 
 static const char* kTexFrag =
@@ -393,6 +397,11 @@ bool glr_world_active(const GlRenderer* r) {
     return r->immersive && r->worldMode && r->world && glw_available(r->world);
 }
 
+const char* glr_world_fail(const GlRenderer* r) {
+    if (!r->world) return "gl_world not initialized";
+    return glw_fail_reason(r->world);
+}
+
 void glr_world_begin_frame(GlRenderer* r) {
     if (r->world) glw_begin_frame(r->world);
 }
@@ -441,6 +450,10 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
 
     Mat4 viewMat = mat4_invert_rigid(mat4_from_pose(view->pose));
     Mat4 projMat = mat4_projection(view->fov, 0.01f, 600.0f);
+    // GL writes the swapchain image bottom-up; the XR compositor reads it
+    // top-down. Negating projection Y renders the scene upside-down in GL
+    // terms so it presents upright (without this everything shows flipped).
+    projMat.m[5] = -projMat.m[5];
     Mat4 vp = mat4_mul(projMat, viewMat);
 
     // --- doom frame ---

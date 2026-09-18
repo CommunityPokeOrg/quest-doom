@@ -305,30 +305,37 @@ void android_main(struct android_app* app) {
             doomgeneric_Tick();
         }
 
-        // In-level gameplay is first-person; title/menu/intermission frames go
-        // to the world-locked panel so 2D content is never glued to the HMD.
-        // In-level, true-3D GL world geometry replaces the framebuffer quad
-        // unless the automap or menu is up (those draw in the software frame).
-        int inLevel = g_doomStarted && VR_InLevel();
-        int worldMode = inLevel && !automapactive && !menuactive;
+        // Any GS_LEVEL frame (including attract demo playback) renders the
+        // true-3D world path; automap/menu overlays fall back to the software
+        // quad, and title/menus/intermissions go to the world-locked panel —
+        // 2D content is never glued to the HMD.
+        mobj_t* mo = (g_doomStarted && gamestate == GS_LEVEL)
+                     ? players[consoleplayer].mo : NULL;
+        int renderInLevel = (mo != NULL);
+        int worldMode = renderInLevel && !automapactive && !menuactive;
         {
             static int lastMode = -1;
             int mode = (worldMode && glr_world_active(&g_renderer)) ? 3
                      : worldMode ? 2
-                     : inLevel ? 1 : 0;
+                     : renderInLevel ? 1 : 0;
             if (mode != lastMode) {
-                LOGI("render mode -> %s",
-                     mode == 3 ? "3D_WORLD (real geometry, in-level)"
-                     : mode == 2 ? "3D_WORLD pending geometry (quad fallback)"
-                     : mode == 1 ? "SOFTWARE_QUAD (automap/menu in-level)"
-                               : "WORLD_PANEL (menu/title)");
+                if (mode == 3)
+                    LOGI("QuestDOOM: RENDER_MODE: 3D_WORLD");
+                else if (mode == 2)
+                    LOGI("QuestDOOM: RENDER_MODE: 3D_WORLD fallback -> "
+                         "SOFTWARE_QUAD, reason: %s",
+                         glr_world_fail(&g_renderer));
+                else if (mode == 1)
+                    LOGI("QuestDOOM: RENDER_MODE: SOFTWARE_QUAD "
+                         "(automap/menu in-level)");
+                else
+                    LOGI("QuestDOOM: RENDER_MODE: WORLD_PANEL (menu/title)");
                 lastMode = mode;
             }
-            glr_set_immersive(&g_renderer, inLevel);
+            glr_set_immersive(&g_renderer, renderInLevel);
             glr_set_world_mode(&g_renderer, worldMode);
         }
 
-        mobj_t* mo = inLevel ? players[consoleplayer].mo : NULL;
         if (worldMode && mo) {
             glr_world_frame_camera(&g_renderer,
                                    (float)mo->x / 65536.0f,
