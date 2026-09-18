@@ -1,0 +1,12 @@
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    namespace 'org.communitypoke.openxrloader'
+    compileSdk 34
+    defaultConfig {
+        minSdk 24
+    }
+    buildTypes { release { } }
+}

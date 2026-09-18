@@ -1,0 +1,9 @@
+.gradle/
+build/
+*/build/
+openxr-sdk-source/
+openxr-sdk.tar.gz
+local.properties
+*.iml
+# generated .so staging dirs
+*/src/main/jniLibs/
