@@ -223,6 +223,19 @@ static bool xr_create_session(XrEngine* e) {
 
     spaceCi.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
     XR_CHECK(xrCreateReferenceSpace(e->session, &spaceCi, &e->viewSpace));
+
+    // STAGE gives a floor-stable, room-calibrated origin; fall back to LOCAL
+    // on runtimes without guardian/stage data.
+    spaceCi.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    if (XR_SUCCEEDED(xrCreateReferenceSpace(e->session, &spaceCi,
+                                          &e->appSpace))) {
+        e->appSpaceIsStage = true;
+        LOGI("app space: STAGE");
+    } else {
+        e->appSpace = e->localSpace;
+        e->appSpaceIsStage = false;
+        LOGI("app space: LOCAL (stage unavailable)");
+    }
     return true;
 }
 
@@ -321,6 +334,8 @@ void xr_shutdown(XrEngine* e) {
     }
     if (e->localSpace != XR_NULL_HANDLE) xrDestroySpace(e->localSpace);
     if (e->viewSpace != XR_NULL_HANDLE) xrDestroySpace(e->viewSpace);
+    if (e->appSpace != XR_NULL_HANDLE && e->appSpace != e->localSpace)
+        xrDestroySpace(e->appSpace);
     if (e->session != XR_NULL_HANDLE) xrDestroySession(e->session);
     if (e->instance != XR_NULL_HANDLE) xrDestroyInstance(e->instance);
     if (e->eglDisplay != EGL_NO_DISPLAY) {
@@ -437,7 +452,7 @@ bool xr_locate_views(XrEngine* e) {
         .type = XR_TYPE_VIEW_LOCATE_INFO,
         .viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
         .displayTime = e->frameState.predictedDisplayTime,
-        .space = e->localSpace,
+        .space = e->appSpace,
     };
     XrViewState viewState = {.type = XR_TYPE_VIEW_STATE};
     uint32_t count = 0;

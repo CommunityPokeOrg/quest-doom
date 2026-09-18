@@ -25,8 +25,7 @@ static Mat4 mat4_mul(Mat4 a, Mat4 b) {
     return r;
 }
 
-// XrFovf angles -> perspective projection (0..1 depth is what GLES expects via
-// the standard OpenGL projection; XR gives real fov per eye).
+// XrFovf angles -> perspective projection.
 static Mat4 mat4_projection(XrFovf fov, float nearZ, float farZ) {
     float tanL = tanf(fov.angleLeft), tanR = tanf(fov.angleRight);
     float tanD = tanf(fov.angleDown), tanU = tanf(fov.angleUp);
@@ -76,9 +75,11 @@ static Mat4 mat4_invert_rigid(Mat4 t) {
 // Shaders
 // ---------------------------------------------------------------------------
 
-// Fullscreen quad: clip-space positions, no view transform — the doom texture
-// already encodes the eye's view. Byte swizzle: DOOM pixels are little-endian
-// 0x00RRGGBB words, uploaded as GL_RGBA bytes -> B,G,R,0.
+// Immersive quad: clip-space fullscreen, the doom texture already encodes the
+// eye's view of the world (per-eye render with stereo offset baked in), so no
+// view transform is applied — this is first-person, not a head-locked window.
+// Byte swizzle: DOOM pixels are little-endian 0x00RRGGBB words uploaded as
+// GL_RGBA bytes -> B,G,R,0.
 static const char* kQuadVert =
     "#version 300 es\n"
     "layout(location=0) in vec2 aPos;\n"
@@ -86,7 +87,7 @@ static const char* kQuadVert =
     "void main() { vUV = aPos * 0.5 + 0.5; vUV.y = 1.0 - vUV.y; "
     "  gl_Position = vec4(aPos, 0.0, 1.0); }\n";
 
-static const char* kQuadFrag =
+static const char* kTexFrag =
     "#version 300 es\n"
     "precision mediump float;\n"
     "uniform sampler2D uTex;\n"
@@ -94,23 +95,56 @@ static const char* kQuadFrag =
     "out vec4 frag;\n"
     "void main() { vec4 t = texture(uTex, vUV); frag = vec4(t.b, t.g, t.r, 1.0); }\n";
 
-// Joint cubes: per-instance model offset + world position, view/proj applied.
+// World-locked quad: the doom frame on a fixed app-space plane (menus etc.).
+static const char* kWorldVert =
+    "#version 300 es\n"
+    "layout(location=0) in vec3 aPos;\n"
+    "layout(location=1) in vec2 aUV;\n"
+    "uniform mat4 uViewProj;\n"
+    "uniform mat4 uModel;\n"
+    "out vec2 vUV;\n"
+    "void main() { vUV = aUV; gl_Position = uViewProj * uModel * vec4(aPos,1); }\n";
+
+// Joint cubes: per-instance world offset + color, view/proj applied.
 static const char* kCubeVert =
     "#version 300 es\n"
     "layout(location=0) in vec3 aPos;\n"     // unit cube corner
-    "layout(location=1) in vec3 aOffset;\n"  // joint position, local space
+    "layout(location=1) in vec3 aOffset;\n"  // joint position, app space
     "layout(location=2) in vec3 aColor;\n"
     "uniform mat4 uViewProj;\n"
     "out vec3 vColor;\n"
     "void main() { vColor = aColor; "
-    "  gl_Position = uViewProj * vec4(aPos * 0.006 + aOffset, 1.0); }\n";
+    "  gl_Position = uViewProj * vec4(aPos * 0.005 + aOffset, 1.0); }\n";
 
-static const char* kCubeFrag =
+static const char* kColorFrag =
     "#version 300 es\n"
     "precision mediump float;\n"
     "in vec3 vColor;\n"
     "out vec4 frag;\n"
     "void main() { frag = vec4(vColor, 0.85); }\n";
+
+// Bone segments: unit cube stretched from aPosA to aPosB with radius aRadius.
+static const char* kBoneVert =
+    "#version 300 es\n"
+    "layout(location=0) in vec3 aPos;\n"      // unit cube corner
+    "layout(location=1) in vec3 aPosA;\n"     // bone start, app space
+    "layout(location=2) in vec3 aPosB;\n"     // bone end
+    "layout(location=3) in vec3 aColor;\n"
+    "layout(location=4) in float aRadius;\n"
+    "uniform mat4 uViewProj;\n"
+    "out vec3 vColor;\n"
+    "void main() {\n"
+    "  vColor = aColor;\n"
+    "  vec3 axis = aPosB - aPosA;\n"
+    "  float len = max(length(axis), 1e-5);\n"
+    "  axis /= len;\n"
+    "  vec3 ref = abs(axis.y) > 0.9 ? vec3(1,0,0) : vec3(0,1,0);\n"
+    "  vec3 right = normalize(cross(ref, axis));\n"
+    "  vec3 up = cross(axis, right);\n"
+    "  vec3 w = aPosA + axis * (aPos.x + 0.5) * len\n"
+    "         + right * aPos.y * aRadius + up * aPos.z * aRadius;\n"
+    "  gl_Position = uViewProj * vec4(w, 1.0);\n"
+    "}\n";
 
 static GLuint compile_shader(GLenum type, const char* src) {
     GLuint s = glCreateShader(type);
@@ -156,6 +190,16 @@ static const float kQuadVerts[] = {
      1.f, -1.f,  1.f, 1.f,   -1.f, 1.f,
 };
 
+// World-locked panel: 2.56m x 1.6m (matches doom 640x400 aspect), pos+uv.
+static const float kWorldQuadVerts[] = {
+    -1.28f, -0.8f, 0.f,  0.f, 0.f,
+     1.28f, -0.8f, 0.f,  1.f, 0.f,
+    -1.28f,  0.8f, 0.f,  0.f, 1.f,
+     1.28f, -0.8f, 0.f,  1.f, 0.f,
+     1.28f,  0.8f, 0.f,  1.f, 1.f,
+    -1.28f,  0.8f, 0.f,  0.f, 1.f,
+};
+
 // unit cube centered at origin, 36 verts (12 tris), side = 1
 static const float kCubeVerts[] = {
     -0.5f,-0.5f,-0.5f,  0.5f, 0.5f,-0.5f,  0.5f,-0.5f,-0.5f,
@@ -164,12 +208,51 @@ static const float kCubeVerts[] = {
     -0.5f,-0.5f, 0.5f,  0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f,
     -0.5f,-0.5f,-0.5f,  0.5f,-0.5f,-0.5f,  0.5f,-0.5f, 0.5f,
     -0.5f,-0.5f,-0.5f,  0.5f,-0.5f, 0.5f, -0.5f,-0.5f, 0.5f,
-    -0.5f, 0.5f,-0.5f,  0.5f, 0.5f, 0.5f,  0.5f, 0.5f,-0.5f,
+    -0.5f, 0.5f,-0.5f,  0.5f, 0.5f,-0.5f,  0.5f, 0.5f,-0.5f,
     -0.5f, 0.5f,-0.5f, -0.5f, 0.5f, 0.5f,  0.5f, 0.5f, 0.5f,
-    -0.5f,-0.5f,-0.5f, -0.5f,-0.5f, 0.5f, -0.5f, 0.5f,-0.5f,
+    -0.5f,-0.5f,-0.5f, -0.5f,-0.5f, 0.5f, -0.5f,-0.5f,-0.5f,
      0.5f, 0.5f,-0.5f, -0.5f,-0.5f, 0.5f, -0.5f,-0.5f,-0.5f,
-     0.5f, 0.5f,-0.5f,  0.5f,-0.5f, 0.5f,  0.5f,-0.5f,-0.5f,
-     0.5f, 0.5f, 0.5f,  0.5f,-0.5f,-0.5f,  0.5f,-0.5f, 0.5f,
+     0.5f, 0.5f, 0.5f,  0.5f,-0.5f, 0.5f,  0.5f,-0.5f, 0.5f,
+};
+
+// XR_HAND_JOINT_* bone connectivity (default joint set, indices per hand).
+// WRIST=1 PALM=0; each finger: metacarpal->proximal->intermediate->distal->tip.
+#define BONE_COUNT 28
+static const int kBones[BONE_COUNT][2] = {
+    {XR_HAND_JOINT_WRIST_EXT, XR_HAND_JOINT_PALM_EXT},
+    // knuckle webbing across the metacarpals
+    {XR_HAND_JOINT_INDEX_METACARPAL_EXT,  XR_HAND_JOINT_MIDDLE_METACARPAL_EXT},
+    {XR_HAND_JOINT_MIDDLE_METACARPAL_EXT, XR_HAND_JOINT_RING_METACARPAL_EXT},
+    {XR_HAND_JOINT_RING_METACARPAL_EXT,   XR_HAND_JOINT_LITTLE_METACARPAL_EXT},
+    // thumb
+    {XR_HAND_JOINT_WRIST_EXT,           XR_HAND_JOINT_THUMB_METACARPAL_EXT},
+    {XR_HAND_JOINT_THUMB_METACARPAL_EXT, XR_HAND_JOINT_THUMB_PROXIMAL_EXT},
+    {XR_HAND_JOINT_THUMB_PROXIMAL_EXT,   XR_HAND_JOINT_THUMB_DISTAL_EXT},
+    {XR_HAND_JOINT_THUMB_DISTAL_EXT,     XR_HAND_JOINT_THUMB_TIP_EXT},
+    // index
+    {XR_HAND_JOINT_WRIST_EXT,            XR_HAND_JOINT_INDEX_METACARPAL_EXT},
+    {XR_HAND_JOINT_INDEX_METACARPAL_EXT, XR_HAND_JOINT_INDEX_PROXIMAL_EXT},
+    {XR_HAND_JOINT_INDEX_PROXIMAL_EXT,   XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT},
+    {XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT, XR_HAND_JOINT_INDEX_DISTAL_EXT},
+    {XR_HAND_JOINT_INDEX_DISTAL_EXT,     XR_HAND_JOINT_INDEX_TIP_EXT},
+    // middle
+    {XR_HAND_JOINT_WRIST_EXT,             XR_HAND_JOINT_MIDDLE_METACARPAL_EXT},
+    {XR_HAND_JOINT_MIDDLE_METACARPAL_EXT, XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT},
+    {XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT,   XR_HAND_JOINT_MIDDLE_INTERMEDIATE_EXT},
+    {XR_HAND_JOINT_MIDDLE_INTERMEDIATE_EXT, XR_HAND_JOINT_MIDDLE_DISTAL_EXT},
+    {XR_HAND_JOINT_MIDDLE_DISTAL_EXT,     XR_HAND_JOINT_MIDDLE_TIP_EXT},
+    // ring
+    {XR_HAND_JOINT_WRIST_EXT,           XR_HAND_JOINT_RING_METACARPAL_EXT},
+    {XR_HAND_JOINT_RING_METACARPAL_EXT, XR_HAND_JOINT_RING_PROXIMAL_EXT},
+    {XR_HAND_JOINT_RING_PROXIMAL_EXT,   XR_HAND_JOINT_RING_INTERMEDIATE_EXT},
+    {XR_HAND_JOINT_RING_INTERMEDIATE_EXT, XR_HAND_JOINT_RING_DISTAL_EXT},
+    {XR_HAND_JOINT_RING_DISTAL_EXT,     XR_HAND_JOINT_RING_TIP_EXT},
+    // little
+    {XR_HAND_JOINT_WRIST_EXT,             XR_HAND_JOINT_LITTLE_METACARPAL_EXT},
+    {XR_HAND_JOINT_LITTLE_METACARPAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT},
+    {XR_HAND_JOINT_LITTLE_PROXIMAL_EXT,   XR_HAND_JOINT_LITTLE_INTERMEDIATE_EXT},
+    {XR_HAND_JOINT_LITTLE_INTERMEDIATE_EXT, XR_HAND_JOINT_LITTLE_DISTAL_EXT},
+    {XR_HAND_JOINT_LITTLE_DISTAL_EXT,     XR_HAND_JOINT_LITTLE_TIP_EXT},
 };
 
 static void build_quad(GlRenderer* r) {
@@ -185,15 +268,62 @@ static void build_quad(GlRenderer* r) {
     glDeleteBuffers(1, &vbo);
 }
 
+static void build_world_quad(GlRenderer* r) {
+    glGenVertexArrays(1, &r->worldVao);
+    glBindVertexArray(r->worldVao);
+    GLuint vbo;
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(kWorldQuadVerts), kWorldQuadVerts,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), NULL);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                          (void*)(3 * sizeof(float)));
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &vbo);
+}
+
+// Shared cube VBO (mesh) for joints and bones; per-instance data streamed per
+// draw. cubeVao gets offset+color instancing; boneVao gets A/B/color/radius.
 static void build_cubes(GlRenderer* r) {
-    glGenVertexArrays(1, &r->cubeVao);
-    glBindVertexArray(r->cubeVao);
     glGenBuffers(1, &r->cubeVbo);
     glBindBuffer(GL_ARRAY_BUFFER, r->cubeVbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(kCubeVerts), kCubeVerts,
                  GL_STATIC_DRAW);
+
+    glGenVertexArrays(1, &r->cubeVao);
+    glBindVertexArray(r->cubeVao);
+    glBindBuffer(GL_ARRAY_BUFFER, r->cubeVbo);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), NULL);
+    glBindVertexArray(0);
+
+    glGenVertexArrays(1, &r->boneVao);
+    glBindVertexArray(r->boneVao);
+    glBindBuffer(GL_ARRAY_BUFFER, r->cubeVbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), NULL);
+    glGenBuffers(1, &r->boneInstVbo);
+    glBindBuffer(GL_ARRAY_BUFFER, r->boneInstVbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 2 * BONE_COUNT * 10 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 10 * sizeof(float), NULL);
+    glVertexAttribDivisor(1, 1);
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 10 * sizeof(float),
+                          (void*)(3 * sizeof(float)));
+    glVertexAttribDivisor(2, 1);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 10 * sizeof(float),
+                          (void*)(6 * sizeof(float)));
+    glVertexAttribDivisor(3, 1);
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, 10 * sizeof(float),
+                          (void*)(9 * sizeof(float)));
+    glVertexAttribDivisor(4, 1);
     glBindVertexArray(0);
 }
 
@@ -204,9 +334,12 @@ static void build_cubes(GlRenderer* r) {
 bool glr_init(GlRenderer* r) {
     memset(r, 0, sizeof(*r));
 
-    r->program = link_program(kQuadVert, kQuadFrag);
-    r->cubeProgram = link_program(kCubeVert, kCubeFrag);
-    if (!r->program || !r->cubeProgram) return false;
+    r->program = link_program(kQuadVert, kTexFrag);
+    r->worldProgram = link_program(kWorldVert, kTexFrag);
+    r->cubeProgram = link_program(kCubeVert, kColorFrag);
+    r->boneProgram = link_program(kBoneVert, kColorFrag);
+    if (!r->program || !r->worldProgram || !r->cubeProgram || !r->boneProgram)
+        return false;
 
     glGenTextures(2, r->doomTex);
     for (int i = 0; i < 2; i++) {
@@ -219,6 +352,7 @@ bool glr_init(GlRenderer* r) {
     }
 
     build_quad(r);
+    build_world_quad(r);
     build_cubes(r);
     glGenFramebuffers(1, &r->fbo);
     return true;
@@ -247,6 +381,21 @@ void glr_set_joints(GlRenderer* r, const float* pos, int count,
     r->jointsVisible[1] = visible[1];
 }
 
+void glr_set_immersive(GlRenderer* r, bool immersive) { r->immersive = immersive; }
+
+// Depth renderbuffer matching the swapchain dimensions (depth-test for
+// world-locked content; swapped only when size changes).
+static void ensure_depth(GlRenderer* r, int w, int h) {
+    if (r->depthRbo && r->depthW == w && r->depthH == h) return;
+    if (!r->depthRbo) glGenRenderbuffers(1, &r->depthRbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, r->depthRbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, r->depthRbo);
+    r->depthW = w;
+    r->depthH = h;
+}
+
 void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
     uint32_t index = 0;
     GLuint tex = xr_acquire_eye_image(e, eye, &index);
@@ -258,35 +407,59 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
     glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                          tex, 0);
+    ensure_depth(r, (int)sc->width, (int)sc->height);
 
     glViewport(0, 0, sc->width, sc->height);
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glDisable(GL_DEPTH_TEST);
-    glUseProgram(r->program);
+    Mat4 viewMat = mat4_invert_rigid(mat4_from_pose(view->pose));
+    Mat4 projMat = mat4_projection(view->fov, 0.01f, 100.0f);
+    Mat4 vp = mat4_mul(projMat, viewMat);
+
+    // --- doom frame ---
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, r->doomTex[eye]);
-    glUniform1i(glGetUniformLocation(r->program, "uTex"), 0);
-    glBindVertexArray(r->quadVao);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
+    if (r->immersive) {
+        // first-person: the texture IS the eye view — no pose applied
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glUseProgram(r->program);
+        glUniform1i(glGetUniformLocation(r->program, "uTex"), 0);
+        glBindVertexArray(r->quadVao);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+        glDepthMask(GL_TRUE);
+    } else {
+        // world-locked panel, fixed pose in app space (never VIEW)
+        Mat4 model = mat4_identity();
+        model.m[13] = 1.45f;   // ~chest/eye height in STAGE space
+        model.m[14] = -2.4f;   // 2.4 m in front of the play-area origin
+        glEnable(GL_DEPTH_TEST);
+        glUseProgram(r->worldProgram);
+        glUniformMatrix4fv(glGetUniformLocation(r->worldProgram, "uViewProj"),
+                          1, GL_FALSE, vp.m);
+        glUniformMatrix4fv(glGetUniformLocation(r->worldProgram, "uModel"),
+                          1, GL_FALSE, model.m);
+        glUniform1i(glGetUniformLocation(r->worldProgram, "uTex"), 0);
+        glBindVertexArray(r->worldVao);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+    }
 
-    // Hand-joint cubes in world space
+    // --- tracked hands: joint knuckles + anatomical bones ---
     int jointCount = r->jointsVisible[0] + r->jointsVisible[1];
     if (jointCount > 0) {
-        Mat4 viewMat = mat4_invert_rigid(mat4_from_pose(view->pose));
-        Mat4 projMat = mat4_projection(view->fov, 0.01f, 50.0f);
-        Mat4 vp = mat4_mul(projMat, viewMat);
-
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glUseProgram(r->cubeProgram);
-        glUniformMatrix4fv(glGetUniformLocation(r->cubeProgram, "uViewProj"),
-                          1, GL_FALSE, vp.m);
 
-        // build instance data: offset + color per joint
+        static const float kHandColor[2][3] = {
+            {0.95f, 0.55f, 0.35f},   // left: warm
+            {0.35f, 0.55f, 0.95f},   // right: cool
+        };
+
+        // joint knuckles (small cubes)
         int n = 0;
         for (int h = 0; h < 2; h++) if (r->jointsVisible[h]) n += 26;
         float* inst = malloc(n * 6 * sizeof(float));
@@ -297,20 +470,21 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
                 float* dst = &inst[j * 6];
                 const float* p = r->jointPos[h * 26 + i];
                 dst[0] = p[0]; dst[1] = p[1]; dst[2] = p[2];
-                // left hand warm, right hand cool
-                dst[3] = h ? 0.35f : 0.95f;
-                dst[4] = 0.55f;
-                dst[5] = h ? 0.95f : 0.35f;
+                dst[3] = kHandColor[h][0];
+                dst[4] = kHandColor[h][1];
+                dst[5] = kHandColor[h][2];
                 j++;
             }
         }
+        glUseProgram(r->cubeProgram);
+        glUniformMatrix4fv(glGetUniformLocation(r->cubeProgram, "uViewProj"),
+                          1, GL_FALSE, vp.m);
         GLuint instVbo;
         glGenBuffers(1, &instVbo);
+        glBindVertexArray(r->cubeVao);
         glBindBuffer(GL_ARRAY_BUFFER, instVbo);
         glBufferData(GL_ARRAY_BUFFER, n * 6 * sizeof(float), inst,
                      GL_DYNAMIC_DRAW);
-        glBindVertexArray(r->cubeVao);
-        glBindBuffer(GL_ARRAY_BUFFER, instVbo);
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), NULL);
         glVertexAttribDivisor(1, 1);
@@ -319,13 +493,42 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
                               (void*)(3 * sizeof(float)));
         glVertexAttribDivisor(2, 1);
         glDrawArraysInstanced(GL_TRIANGLES, 0, 36, n);
-        glVertexAttribDivisor(1, 0);
-        glVertexAttribDivisor(2, 0);
-        glDisableVertexAttribArray(1);
-        glDisableVertexAttribArray(2);
         glBindVertexArray(0);
         glDeleteBuffers(1, &instVbo);
         free(inst);
+
+        // bone segments
+        int nb = 0;
+        for (int h = 0; h < 2; h++) if (r->jointsVisible[h]) nb += BONE_COUNT;
+        float* bdata = malloc(nb * 10 * sizeof(float));
+        int bi = 0;
+        for (int h = 0; h < 2; h++) {
+            if (!r->jointsVisible[h]) continue;
+            for (int b = 0; b < BONE_COUNT; b++) {
+                const float* a = r->jointPos[h * 26 + kBones[b][0]];
+                const float* c = r->jointPos[h * 26 + kBones[b][1]];
+                float* dst = &bdata[bi * 10];
+                dst[0] = a[0]; dst[1] = a[1]; dst[2] = a[2];
+                dst[3] = c[0]; dst[4] = c[1]; dst[5] = c[2];
+                dst[6] = kHandColor[h][0] * 0.75f;
+                dst[7] = kHandColor[h][1] * 0.75f;
+                dst[8] = kHandColor[h][2] * 0.75f;
+                // wrist/palm bones thicker than finger bones
+                dst[9] = (b < 4) ? 0.011f : 0.007f;
+                bi++;
+            }
+        }
+        glUseProgram(r->boneProgram);
+        glUniformMatrix4fv(glGetUniformLocation(r->boneProgram, "uViewProj"),
+                          1, GL_FALSE, vp.m);
+        glBindVertexArray(r->boneVao);
+        glBindBuffer(GL_ARRAY_BUFFER, r->boneInstVbo);
+        glBufferData(GL_ARRAY_BUFFER, nb * 10 * sizeof(float), bdata,
+                     GL_DYNAMIC_DRAW);
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 36, nb);
+        glBindVertexArray(0);
+        free(bdata);
+
         glDisable(GL_BLEND);
     }
 
@@ -339,7 +542,10 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
 
 void glr_shutdown(GlRenderer* r) {
     glDeleteFramebuffers(1, &r->fbo);
+    if (r->depthRbo) glDeleteRenderbuffers(1, &r->depthRbo);
     glDeleteProgram(r->program);
+    glDeleteProgram(r->worldProgram);
     glDeleteProgram(r->cubeProgram);
+    glDeleteProgram(r->boneProgram);
     glDeleteTextures(2, r->doomTex);
 }

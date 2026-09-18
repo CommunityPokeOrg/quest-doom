@@ -111,7 +111,7 @@ bool xrh_init(XrHands* h, XrEngine* e) {
 static bool locate(XrHands* h, XrEngine* e, int hand) {
     XrHandJointsLocateInfoEXT li = {
         .type = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT,
-        .baseSpace = e->localSpace,
+        .baseSpace = e->appSpace,
         .time = e->frameState.predictedDisplayTime,
     };
     XrHandJointLocationEXT locs[XR_HAND_JOINTS];

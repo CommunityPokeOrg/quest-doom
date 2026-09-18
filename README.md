@@ -4,13 +4,15 @@ DOOM running on Meta Quest standalone VR headsets (Quest 2 / Pro / 3 / 3S),
 built on the [doomgeneric](https://github.com/ozkl/doomgeneric) engine with an
 OpenXR + Android NDK backend.
 
-This is a fully immersive port: the DOOM software renderer runs once per eye
-with true stereoscopic rendering (real IPD separation into separate per-eye
-swapchains), 6DOF head tracking drives the in-game camera, the right-hand
-controller aim is decoupled from view pitch for weapon aiming, and Meta's
-`XR_EXT_hand_tracking` adds full gesture controls with an in-world joint
-visualisation. The shareware `doom1.wad` is bundled, so it plays out of the
-box.
+This is a fully immersive port: in-level gameplay is first-person — the DOOM
+software renderer runs once per eye (real IPD separation into separate per-eye
+swapchains), 6DOF head tracking drives the in-game camera, and the right-hand
+controller aim is decoupled from view pitch for weapon aiming. Non-level
+content (title, menus, intermissions, demo playback) renders on a
+world-locked panel at a fixed pose in the app space — never glued to the HMD.
+Meta's `XR_EXT_hand_tracking` adds full gesture controls with a tracked
+skeleton (26 joints + bone segments per hand). The shareware `doom1.wad` is
+bundled, so it plays out of the box.
 
 ## Controls (Oculus Touch)
 
@@ -34,8 +36,11 @@ box.
 Hand tracking uses `XR_EXT_hand_tracking` (26 joints per hand, both hands) and
 works in parallel with the Touch controllers — whichever you use wins. If the
 runtime or permission doesn't allow it, the game silently falls back to
-controllers only. When your hands are tracked, coloured cubes render at each
-joint (warm tint = left hand, cool = right).
+controllers only. When your hands are tracked, a tracked skeleton renders in-world: small
+knuckle cubes at all 26 joints plus bone segments connecting them
+(wrist → metacarpals → proximals → intermediates → distals → tips, plus palm
+webbing). Warm tint = left hand, cool = right. Everything is depth-tested in
+the app space with real per-eye view/FOV matrices.
 
 | Gesture | Action |
 |---|---|

@@ -174,7 +174,7 @@ static void quat_to_yawpitch(XrQuaternionf q, float* yawDeg, float* pitchDeg) {
 static void update_vr_poses(void) {
     // Head pose: locate the view space in local space.
     XrSpaceLocation headLoc = {.type = XR_TYPE_SPACE_LOCATION};
-    if (XR_FAILED(xrLocateSpace(g_xr.viewSpace, g_xr.localSpace,
+    if (XR_FAILED(xrLocateSpace(g_xr.viewSpace, g_xr.appSpace,
                                 g_xr.frameState.predictedDisplayTime,
                                 &headLoc)))
         return;
@@ -294,6 +294,10 @@ void android_main(struct android_app* app) {
             doomgeneric_Tick();
         }
 
+        // In-level gameplay is first-person; title/menu/intermission frames go
+        // to the world-locked panel so 2D content is never glued to the HMD.
+        glr_set_immersive(&g_renderer, g_doomStarted && VR_InLevel());
+
         if (viewsOk) {
             for (int eye = 0; eye < g_xr.viewCount; eye++)
                 glr_draw_eye(&g_renderer, &g_xr, eye);
@@ -301,7 +305,7 @@ void android_main(struct android_app* app) {
 
         XrCompositionLayerProjection proj = {
             .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION,
-            .space = g_xr.localSpace,
+            .space = g_xr.appSpace,
             .viewCount = g_xr.viewCount,
             .views = g_xr.projViews,
         };

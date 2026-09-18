@@ -165,7 +165,7 @@ bool xri_get_aim_pose(XrInput* in, XrEngine* e, XrPosef* outPose) {
     xrGetActionStatePose(e->session, &gi, &st);
     if (!st.isActive) return false;
     XrSpaceLocation loc = {.type = XR_TYPE_SPACE_LOCATION};
-    if (XR_FAILED(xrLocateSpace(in->aimSpace, e->localSpace,
+    if (XR_FAILED(xrLocateSpace(in->aimSpace, e->appSpace,
                                 e->frameState.predictedDisplayTime, &loc)))
         return false;
     if (!(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||

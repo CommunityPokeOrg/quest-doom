@@ -44,7 +44,12 @@ typedef struct {
     bool exitRequested;
 
     XrSpace localSpace;
-    XrSpace viewSpace;  // head-locked space
+    XrSpace viewSpace;  // head-locked space (head pose source only)
+    // App space: STAGE (floor-relative, stable) preferred, LOCAL fallback.
+    // All view location, joint location, and layer submission happen in this
+    // space. Never used for content pose — VIEW is never a content space.
+    XrSpace appSpace;
+    bool appSpaceIsStage;
 
     EGLDisplay eglDisplay;
     EGLConfig eglConfig;
