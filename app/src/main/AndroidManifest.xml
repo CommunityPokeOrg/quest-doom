@@ -2,19 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- OpenXR-capable VR headset (Quest). required=false keeps the APK
-         installable on other devices for sideload testing. -->
-    <uses-feature
-        android:name="android.hardware.vr.headtracking"
-        android:version="1"
-        android:required="true" />
-    <!-- Hand tracking is optional: the game falls back to Touch controllers
-         when it is unavailable or disabled. -->
-    <uses-feature
-        android:name="oculus.software.handtracking"
-        android:required="false" />
-
-    <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
+    <!-- Shared activity/permissions; VR-backend specifics live in the
+         quest/ and cardboard/ flavor manifests. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Needed only if you want to load WADs from shared storage (/sdcard). -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
@@ -25,19 +14,10 @@
         android:allowBackup="false"
         tools:ignore="MissingApplicationIcon">
 
-        <meta-data android:name="com.oculus.supportedDevices"
-                   android:value="quest|quest2|questpro|quest3|quest3s" />
-        <!-- Keep 6DOF tracking + frame submission when the system VR overlay
-             steals focus (avoids tracking loss inside the boundary menus). -->
-        <meta-data android:name="com.oculus.vr.focusaware"
-                   android:value="true" />
-
         <activity
             android:name="android.app.NativeActivity"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
             android:launchMode="singleTask"
-            android:screenOrientation="landscape"
-            android:excludeFromRecents="true"
             android:resizeableActivity="false"
             android:exported="true"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|navigation|uiMode|density|fontScale">
@@ -48,8 +28,6 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="com.oculus.intent.category.VR" />
-                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
             </intent-filter>
         </activity>
     </application>

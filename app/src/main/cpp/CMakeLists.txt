@@ -31,7 +31,9 @@ add_library(questdoom SHARED
     quest/xr_input.c
     quest/xr_hands.c
     quest/gl_renderer.c
-    quest/gl_world.c)
+    quest/gl_xr.c
+    quest/gl_world.c
+    quest/cb_engine.c)
 
 target_include_directories(questdoom PRIVATE
     openxr/include

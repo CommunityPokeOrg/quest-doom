@@ -1,75 +1,11 @@
 #include "gl_renderer.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-// ---------------------------------------------------------------------------
-// Minimal mat4 / quat math (column-major, like GLSL)
-// ---------------------------------------------------------------------------
-
-typedef struct { float m[16]; } Mat4;
-
-static Mat4 mat4_identity(void) {
-    Mat4 r = {{0}};
-    r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0f;
-    return r;
-}
-
-static Mat4 mat4_mul(Mat4 a, Mat4 b) {
-    Mat4 r = {{0}};
-    for (int c = 0; c < 4; c++)
-        for (int rw = 0; rw < 4; rw++)
-            for (int k = 0; k < 4; k++)
-                r.m[c * 4 + rw] += a.m[k * 4 + rw] * b.m[c * 4 + k];
-    return r;
-}
-
-// XrFovf angles -> perspective projection.
-static Mat4 mat4_projection(XrFovf fov, float nearZ, float farZ) {
-    float tanL = tanf(fov.angleLeft), tanR = tanf(fov.angleRight);
-    float tanD = tanf(fov.angleDown), tanU = tanf(fov.angleUp);
-    float w = tanR - tanL, h = tanD - tanU;
-
-    Mat4 p = {{0}};
-    p.m[0] = 2.0f / w;
-    p.m[5] = 2.0f / h;
-    p.m[8] = (tanR + tanL) / w;
-    p.m[9] = (tanU + tanD) / h;
-    p.m[10] = -(farZ + nearZ) / (farZ - nearZ);
-    p.m[11] = -1.0f;
-    p.m[14] = -(farZ * (nearZ + nearZ)) / (farZ - nearZ);
-    return p;
-}
-
-// Rigid transform (quat + pos) -> 4x4.
-static Mat4 mat4_from_pose(XrPosef pose) {
-    XrQuaternionf q = pose.orientation;
-    XrVector3f v = pose.position;
-    float x2 = q.x + q.x, y2 = q.y + q.y, z2 = q.z + q.z;
-    float xx = q.x * x2, xy = q.x * y2, xz = q.x * z2;
-    float yy = q.y * y2, yz = q.y * z2, zz = q.z * z2;
-    float wx = q.w * x2, wy = q.w * y2, wz = q.w * z2;
-
-    Mat4 r = mat4_identity();
-    r.m[0] = 1 - (yy + zz); r.m[1] = xy + wz;       r.m[2] = xz - wy;
-    r.m[4] = xy - wz;       r.m[5] = 1 - (xx + zz); r.m[6] = yz + wx;
-    r.m[8] = xz + wy;       r.m[9] = yz - wx;       r.m[10] = 1 - (xx + yy);
-    r.m[12] = v.x; r.m[13] = v.y; r.m[14] = v.z;
-    return r;
-}
-
-// Inverse of a rigid transform = transpose rotation, negate translation.
-static Mat4 mat4_invert_rigid(Mat4 t) {
-    Mat4 r = mat4_identity();
-    for (int c = 0; c < 3; c++)
-        for (int rw = 0; rw < 3; rw++)
-            r.m[c * 4 + rw] = t.m[rw * 4 + c];
-    r.m[12] = -(t.m[0] * t.m[12] + t.m[1] * t.m[13] + t.m[2] * t.m[14]);
-    r.m[13] = -(t.m[4] * t.m[12] + t.m[5] * t.m[13] + t.m[6] * t.m[14]);
-    r.m[14] = -(t.m[8] * t.m[12] + t.m[9] * t.m[13] + t.m[10] * t.m[14]);
-    return r;
-}
+typedef GlMat4 Mat4;
 
 // ---------------------------------------------------------------------------
 // Shaders
@@ -81,14 +17,15 @@ static Mat4 mat4_invert_rigid(Mat4 t) {
 // Byte swizzle: DOOM pixels are little-endian 0x00RRGGBB words uploaded as
 // GL_RGBA bytes -> B,G,R,0.
 // The OpenXR compositor samples swapchain images top-left-origin while GL
-// writes bottom-up, so every path renders Y-flipped (projection Y is negated
-// for 3D content; this clip-space quad is left unflipped so its texel row 0
-// lands in texture row 0 = compositor top).
+// writes bottom-up, so for texture targets the quad samples unflipped (texel
+// row 0 = compositor top); a native window framebuffer needs the V flipped.
 static const char* kQuadVert =
     "#version 300 es\n"
     "layout(location=0) in vec2 aPos;\n"
+    "uniform float uVFlip;\n"
     "out vec2 vUV;\n"
-    "void main() { vUV = aPos * 0.5 + 0.5; "
+    "void main() { vec2 uv = aPos * 0.5 + 0.5; "
+    "  vUV = vec2(uv.x, mix(uv.y, 1.0 - uv.y, uVFlip)); "
     "  gl_Position = vec4(aPos, 0.0, 1.0); }\n";
 
 static const char* kTexFrag =
@@ -100,14 +37,19 @@ static const char* kTexFrag =
     "void main() { vec4 t = texture(uTex, vUV); frag = vec4(t.b, t.g, t.r, 1.0); }\n";
 
 // World-locked quad: the doom frame on a fixed app-space plane (menus etc.).
+// uUVFlip lets the backend correct panel texture orientation: XR texture
+// targets are consumed by the compositor (top-left origin) while a native
+// window surface presents bottom-up, and the two disagree on panel UV.
 static const char* kWorldVert =
     "#version 300 es\n"
     "layout(location=0) in vec3 aPos;\n"
     "layout(location=1) in vec2 aUV;\n"
     "uniform mat4 uViewProj;\n"
     "uniform mat4 uModel;\n"
+    "uniform vec2 uUVFlip;\n"
     "out vec2 vUV;\n"
-    "void main() { vUV = aUV; gl_Position = uViewProj * uModel * vec4(aPos,1); }\n";
+    "void main() { vUV = mix(aUV, 1.0 - aUV, uUVFlip); "
+    "  gl_Position = uViewProj * uModel * vec4(aPos,1); }\n";
 
 // Joint cubes: per-instance world offset + color, view/proj applied.
 static const char* kCubeVert =
@@ -195,7 +137,6 @@ static const float kQuadVerts[] = {
 };
 
 // World-locked panel: 2.56m x 1.6m (matches doom 640x400 aspect), pos+uv.
-// UVs are V-flipped because doom texel row 0 (texture v=0) is the top row.
 static const float kWorldQuadVerts[] = {
     -1.28f, -0.8f, 0.f,  0.f, 1.f,
      1.28f, -0.8f, 0.f,  1.f, 1.f,
@@ -220,44 +161,24 @@ static const float kCubeVerts[] = {
      0.5f, 0.5f, 0.5f,  0.5f,-0.5f, 0.5f,  0.5f,-0.5f, 0.5f,
 };
 
-// XR_HAND_JOINT_* bone connectivity (default joint set, indices per hand).
-// WRIST=1 PALM=0; each finger: metacarpal->proximal->intermediate->distal->tip.
+// XR_HAND_JOINT_* bone connectivity (default joint set, indices per hand:
+// palm=0 wrist=1 thumb 2-5, index 6-10, middle 11-15, ring 16-20, little
+// 21-25; each finger metacarpal->proximal->intermediate->distal->tip).
 #define BONE_COUNT 28
 static const int kBones[BONE_COUNT][2] = {
-    {XR_HAND_JOINT_WRIST_EXT, XR_HAND_JOINT_PALM_EXT},
+    {1, 0},
     // knuckle webbing across the metacarpals
-    {XR_HAND_JOINT_INDEX_METACARPAL_EXT,  XR_HAND_JOINT_MIDDLE_METACARPAL_EXT},
-    {XR_HAND_JOINT_MIDDLE_METACARPAL_EXT, XR_HAND_JOINT_RING_METACARPAL_EXT},
-    {XR_HAND_JOINT_RING_METACARPAL_EXT,   XR_HAND_JOINT_LITTLE_METACARPAL_EXT},
+    {6, 11}, {11, 16}, {16, 21},
     // thumb
-    {XR_HAND_JOINT_WRIST_EXT,           XR_HAND_JOINT_THUMB_METACARPAL_EXT},
-    {XR_HAND_JOINT_THUMB_METACARPAL_EXT, XR_HAND_JOINT_THUMB_PROXIMAL_EXT},
-    {XR_HAND_JOINT_THUMB_PROXIMAL_EXT,   XR_HAND_JOINT_THUMB_DISTAL_EXT},
-    {XR_HAND_JOINT_THUMB_DISTAL_EXT,     XR_HAND_JOINT_THUMB_TIP_EXT},
+    {1, 2}, {2, 3}, {3, 4}, {4, 5},
     // index
-    {XR_HAND_JOINT_WRIST_EXT,            XR_HAND_JOINT_INDEX_METACARPAL_EXT},
-    {XR_HAND_JOINT_INDEX_METACARPAL_EXT, XR_HAND_JOINT_INDEX_PROXIMAL_EXT},
-    {XR_HAND_JOINT_INDEX_PROXIMAL_EXT,   XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT},
-    {XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT, XR_HAND_JOINT_INDEX_DISTAL_EXT},
-    {XR_HAND_JOINT_INDEX_DISTAL_EXT,     XR_HAND_JOINT_INDEX_TIP_EXT},
+    {1, 6}, {6, 7}, {7, 8}, {8, 9}, {9, 10},
     // middle
-    {XR_HAND_JOINT_WRIST_EXT,             XR_HAND_JOINT_MIDDLE_METACARPAL_EXT},
-    {XR_HAND_JOINT_MIDDLE_METACARPAL_EXT, XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT},
-    {XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT,   XR_HAND_JOINT_MIDDLE_INTERMEDIATE_EXT},
-    {XR_HAND_JOINT_MIDDLE_INTERMEDIATE_EXT, XR_HAND_JOINT_MIDDLE_DISTAL_EXT},
-    {XR_HAND_JOINT_MIDDLE_DISTAL_EXT,     XR_HAND_JOINT_MIDDLE_TIP_EXT},
+    {1, 11}, {11, 12}, {12, 13}, {13, 14}, {14, 15},
     // ring
-    {XR_HAND_JOINT_WRIST_EXT,           XR_HAND_JOINT_RING_METACARPAL_EXT},
-    {XR_HAND_JOINT_RING_METACARPAL_EXT, XR_HAND_JOINT_RING_PROXIMAL_EXT},
-    {XR_HAND_JOINT_RING_PROXIMAL_EXT,   XR_HAND_JOINT_RING_INTERMEDIATE_EXT},
-    {XR_HAND_JOINT_RING_INTERMEDIATE_EXT, XR_HAND_JOINT_RING_DISTAL_EXT},
-    {XR_HAND_JOINT_RING_DISTAL_EXT,     XR_HAND_JOINT_RING_TIP_EXT},
+    {1, 16}, {16, 17}, {17, 18}, {18, 19}, {19, 20},
     // little
-    {XR_HAND_JOINT_WRIST_EXT,             XR_HAND_JOINT_LITTLE_METACARPAL_EXT},
-    {XR_HAND_JOINT_LITTLE_METACARPAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT},
-    {XR_HAND_JOINT_LITTLE_PROXIMAL_EXT,   XR_HAND_JOINT_LITTLE_INTERMEDIATE_EXT},
-    {XR_HAND_JOINT_LITTLE_INTERMEDIATE_EXT, XR_HAND_JOINT_LITTLE_DISTAL_EXT},
-    {XR_HAND_JOINT_LITTLE_DISTAL_EXT,     XR_HAND_JOINT_LITTLE_TIP_EXT},
+    {1, 21}, {21, 22}, {22, 23}, {23, 24}, {24, 25},
 };
 
 static void build_quad(GlRenderer* r) {
@@ -393,6 +314,11 @@ void glr_set_world_mode(GlRenderer* r, bool enabled) {
     r->worldMode = enabled;
 }
 
+void glr_set_panel_uv_flip(GlRenderer* r, float fx, float fy) {
+    r->panelUVFlipX = fx;
+    r->panelUVFlipY = fy;
+}
+
 bool glr_world_active(const GlRenderer* r) {
     return r->immersive && r->worldMode && r->world && glw_available(r->world);
 }
@@ -431,30 +357,30 @@ static void ensure_depth(GlRenderer* r, int w, int h) {
     r->depthH = h;
 }
 
-void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
-    uint32_t index = 0;
-    GLuint tex = xr_acquire_eye_image(e, eye, &index);
-    if (!tex) return;
+void glr_draw_eye_params(GlRenderer* r, const GlrEyeParams* p) {
+    if (p->targetTex) {
+        glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                             GL_TEXTURE_2D, p->targetTex, 0);
+        ensure_depth(r, p->vpW, p->vpH);
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
 
-    XrEyeSwapchain* sc = &e->eyeSwapchains[eye];
-    XrView* view = &e->views[eye];
-
-    glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                         tex, 0);
-    ensure_depth(r, (int)sc->width, (int)sc->height);
-
-    glViewport(0, 0, sc->width, sc->height);
+    // On a shared window framebuffer each eye owns a viewport: the scissor
+    // keeps this eye's clear+draw from wiping or bleeding into the other
+    // half (glClear ignores glViewport). Harmless on texture targets.
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(p->vpX, p->vpY, p->vpW, p->vpH);
+    glViewport(p->vpX, p->vpY, p->vpW, p->vpH);
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    Mat4 viewMat = mat4_invert_rigid(mat4_from_pose(view->pose));
-    Mat4 projMat = mat4_projection(view->fov, 0.01f, 600.0f);
-    // GL writes the swapchain image bottom-up; the XR compositor reads it
-    // top-down. Negating projection Y renders the scene upside-down in GL
-    // terms so it presents upright (without this everything shows flipped).
-    projMat.m[5] = -projMat.m[5];
-    Mat4 vp = mat4_mul(projMat, viewMat);
+    Mat4 viewMat, projMat;
+    memcpy(viewMat.m, p->view, sizeof(viewMat.m));
+    memcpy(projMat.m, p->proj, sizeof(projMat.m));
+    Mat4 vp = glmat_mul(projMat, viewMat);
+    int eye = p->srcEye ? 1 : 0;
 
     // --- doom frame ---
     glActiveTexture(GL_TEXTURE0);
@@ -468,6 +394,10 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
         glDepthMask(GL_FALSE);
         glUseProgram(r->program);
         glUniform1i(glGetUniformLocation(r->program, "uTex"), 0);
+        // XR swapchain texture targets are sampled top-left-origin by the
+        // compositor; a native window framebuffer presents bottom-up.
+        glUniform1f(glGetUniformLocation(r->program, "uVFlip"),
+                    p->targetTex ? 0.0f : 1.0f);
         glBindVertexArray(r->quadVao);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
@@ -478,22 +408,24 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
         // Works whether appSpace is STAGE (floor origin) or LOCAL (head
         // origin): the pose is derived from the first located head pose.
         if (!r->panelPlaced) {
-            XrQuaternionf q = view->pose.orientation;
-            XrVector3f hp = view->pose.position;
-            // forward = q * (0,0,-1), flattened to XZ
-            float fx = -2.0f * (q.y * q.w + q.x * q.z);
-            float fz = -1.0f + 2.0f * (q.x * q.x + q.y * q.y);
+            // Recover the head pose from the view matrix: head world
+            // transform is the inverse rigid of world->eye, and forward is
+            // the -Z column of its rotation.
+            Mat4 headW = glmat_invert_rigid(viewMat);
+            float fx = -headW.m[8];
+            float fz = -headW.m[10];
+            float hp[3] = {headW.m[12], headW.m[13], headW.m[14]};
             float fl = sqrtf(fx * fx + fz * fz);
             if (fl > 1e-4f) { fx /= fl; fz /= fl; }
-            float px = hp.x + fx * 2.4f;
-            float py = hp.y - 0.1f;
-            float pz = hp.z + fz * 2.4f;
+            float px = hp[0] + fx * 2.4f;
+            float py = hp[1] - 0.1f;
+            float pz = hp[2] + fz * 2.4f;
             // rotate the quad to face the user (yaw of the flattened forward)
             // quad +Z is its front face; it must point opposite the
             // user->panel direction (back at the user), so yaw on -forward
             float yaw = atan2f(-fx, -fz);
             float c = cosf(yaw), s = sinf(yaw);
-            Mat4 m = mat4_identity();
+            Mat4 m = glmat_identity();
             m.m[0] = c;  m.m[2] = -s;
             m.m[8] = s;  m.m[10] = c;
             m.m[12] = px;
@@ -510,6 +442,8 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
         glUseProgram(r->worldProgram);
         glUniformMatrix4fv(glGetUniformLocation(r->worldProgram, "uViewProj"),
                           1, GL_FALSE, vp.m);
+        glUniform2f(glGetUniformLocation(r->worldProgram, "uUVFlip"),
+                    r->panelUVFlipX, r->panelUVFlipY);
         glUniformMatrix4fv(glGetUniformLocation(r->worldProgram, "uModel"),
                           1, GL_FALSE, model.m);
         glUniform1i(glGetUniformLocation(r->worldProgram, "uTex"), 0);
@@ -603,17 +537,13 @@ void glr_draw_eye(GlRenderer* r, XrEngine* e, int eye) {
         glDisable(GL_BLEND);
     }
 
+    glDisable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // Ensure all rendering to the swapchain image is complete before the
-    // compositor reads it — without this the runtime can present a black or
-    // partially-rendered texture.
-    glFinish();
-
-    e->projViews[eye].pose = view->pose;
-    e->projViews[eye].fov = view->fov;
-
-    xr_release_eye_image(e, eye);
+    // Texture targets are consumed by a compositor: ensure all rendering is
+    // complete before the caller releases the image, or it can present a
+    // black/partially-rendered texture. Window-framebuffer callers swap next.
+    if (p->targetTex) glFinish();
 }
 
 void glr_shutdown(GlRenderer* r) {

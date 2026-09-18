@@ -14,12 +14,29 @@ android {
         versionCode 1
         versionName "0.1.0"
 
-        ndk { abiFilters 'arm64-v8a' }   // Quest hardware is arm64
         externalNativeBuild {
             cmake {
                 arguments "-DANDROID_STL=c++_shared"
                 cppFlags ""
             }
+        }
+    }
+
+    // quest = Meta Quest OpenXR HMD build; cardboard = generic Android phone
+    // (SensorManager 3DOF + side-by-side stereo, no OpenXR). Both build the
+    // same libquestdoom.so; the backend is chosen at runtime: the OpenXR path
+    // runs when a runtime is present, otherwise the Cardboard path engages.
+    flavorDimensions 'backend'
+    productFlavors {
+        quest {
+            dimension 'backend'
+            ndk { abiFilters 'arm64-v8a' }   // Quest hardware is arm64
+        }
+        cardboard {
+            dimension 'backend'
+            applicationIdSuffix '.cardboard'
+            minSdk 24
+            ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
         }
     }
 

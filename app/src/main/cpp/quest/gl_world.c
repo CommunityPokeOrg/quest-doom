@@ -7,8 +7,7 @@
 // scales them to metres and anchors the world onto the real head pose.
 
 #include "gl_world.h"
-#include "gl_renderer.h"   // GLES3 headers via xr_engine.h
-#include "xr_engine.h"
+#include "gl_common.h"   // GLES3 + logging, backend-neutral
 
 #include <math.h>
 #include <stdlib.h>

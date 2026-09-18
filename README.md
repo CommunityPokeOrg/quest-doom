@@ -17,6 +17,13 @@ weapon aiming, and `XR_EXT_hand_tracking` adds a tracked skeleton (26 joints +
 bone segments per hand) plus gesture controls. The shareware `doom1.wad` is
 bundled, so it plays out of the box.
 
+The project builds two flavors from one code base:
+
+- **quest** — OpenXR backend for Meta Quest (full 6DOF, controllers, hands).
+- **cardboard** — generic Android phones / Cardboard-style viewers: side-by-
+  side stereo on the window surface with 3DOF head tracking from the
+  rotation-vector sensor (no OpenXR, no Google VR SDK).
+
 This 3D-geometry renderer is an **incremental prototype** — see Known
 limitations for what's still missing (HUD/weapon viewmodel, sky domes,
 visplane-style sprite clipping).
@@ -77,21 +84,57 @@ Requirements:
 git clone https://github.com/CommunityPokeOrg/quest-doom.git
 cd quest-doom
 export ANDROID_HOME=/path/to/Android/Sdk   # or create local.properties with sdk.dir=...
-./gradlew assembleDebug
+./gradlew assembleQuestDebug        # Quest APK
+./gradlew assembleCardboardDebug    # generic Android / Cardboard APK
 ```
 
-Output: `app/build/outputs/apk/debug/app-debug.apk`
+Outputs:
 
-The OpenXR loader (`libopenxr_loader.so`, Khronos loader 1.1.38) is vendored in
-`app/src/main/jniLibs/` and the OpenXR headers in `app/src/main/cpp/openxr/` —
+- `app/build/outputs/apk/quest/debug/app-quest-debug.apk`
+- `app/build/outputs/apk/cardboard/debug/app-cardboard-debug.apk`
+  (package `org.communitypoke.questdoom.cardboard`, label "DOOM Cardboard")
+
+The OpenXR loader (`libopenxr_loader.so`, built from the official Khronos
+OpenXR-SDK-Source, release 1.1.63) is vendored for arm64-v8a and armeabi-v7a
+in `app/src/main/jniLibs/` and the OpenXR headers in `app/src/main/cpp/openxr/` —
 no external native dependencies are fetched at build time.
+
+## Cardboard / phone build
+
+The `cardboard` flavor is a normal Android app: install on any phone with a
+rotation-vector sensor (gyroscope) and, optionally, slide it into a
+Cardboard-style viewer for stereo.
+
+```bash
+adb install -r app/build/outputs/apk/cardboard/debug/app-cardboard-debug.apk
+```
+
+What it does:
+
+- Side-by-side stereo: each screen half is one eye (±32 mm IPD, ~60° vertical
+  FOV symmetric frustums), using the same `gl_world` 3D level renderer as
+  Quest.
+- 3DOF head tracking via `SensorManager` `TYPE_ROTATION_VECTOR` (falls back to
+  `TYPE_GAME_ROTATION_VECTOR`). Hold the phone in landscape; head yaw/pitch
+  aim the view. No positional tracking on phones.
+- Runtime backend selection is automatic: `android_main` tries the OpenXR
+  backend first and falls back to the sensor/EGL window path when no OpenXR
+  runtime exists. Logcat shows `QuestDOOM: BACKEND: OPENXR` or
+  `QuestDOOM: BACKEND: CARDBOARD`.
+- Touch controls: tap right half = fire, tap left half = use/open. Bluetooth
+  or USB gamepads work via key events (A/R1/R2 = fire, X/Y = use, d-pad =
+  move, B/back = escape, start = enter).
+
+Cardboard limitations vs Quest: no 6DOF positional tracking, no hand
+skeletons, no controller aim decoupling, and no lens-distortion correction
+(no Cardboard SDK integration — expect visible warp through lenses).
 
 ## Installing on Quest
 
 Enable developer mode on the headset, then:
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/quest/debug/app-quest-debug.apk
 ```
 
 Launch from the app library (filter: unknown sources) or:
@@ -151,9 +194,16 @@ app/src/main/cpp/
                   key queue, pose extraction (head/eye/aim), stdout->logcat
     xr_engine.c   OpenXR instance/session/spaces (incl. XR_EXT_hand_tracking
                   enumeration), EGL+GLES3 context, per-eye swapchains
-    gl_renderer.c per-eye compositing: world geometry, doom-frame panel,
-                  tracked-hand skeleton, drawn into the acquired swapchain
-                  image with real view/FOV/projection
+    gl_renderer.c backend-neutral per-eye compositing: world geometry,
+                  doom-frame panel, tracked-hand skeleton; draws via
+                  GlrEyeParams (view/proj matrices + viewport + optional
+                  texture target) — no OpenXR types
+    gl_xr.c/.h    OpenXR eye-draw adapter: acquires swapchain image, converts
+                  XrView pose/FOV into GlrEyeParams, applies the compositor
+                  projection-Y flip
+    cb_engine.c/.h generic Android backend: EGL window surface, SensorManager
+                  rotation-vector 3DOF tracking, split-screen eye viewports,
+                  touch/gamepad input
     gl_world.c    true-3D level renderer: builds GL triangles from doomgeneric
                   map data (wall quads from segs, floor/ceiling fans from
                   subsector rings, billboard sprites from mobj thinkers),
@@ -219,6 +269,9 @@ approximated:
   released.
 - The software renderer still runs every tick alongside the GL world path
   (needed for automap/menus), so there is some duplicated frame cost.
+- **Cardboard flavor**: 3DOF only, no lens-distortion correction (Cardboard
+  SDK not integrated), touch controls are minimal (tap-to-fire/use only —
+  no virtual sticks yet), gyro yaw drifts without magnetometer fusion.
 
 ## License
 

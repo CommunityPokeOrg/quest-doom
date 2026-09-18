@@ -25,6 +25,8 @@
 #include "xr_input.h"
 #include "xr_hands.h"
 #include "gl_renderer.h"
+#include "gl_xr.h"
+#include "cb_engine.h"
 
 #define KEYQUEUE_SIZE 64
 
@@ -32,6 +34,7 @@ static XrEngine g_xr;
 static XrInput g_input;
 static XrHands g_hands;
 static GlRenderer g_renderer;
+static CbEngine g_cb;
 static struct android_app* g_app;
 static bool g_doomStarted = false;
 static bool g_doomExited = false;
@@ -231,6 +234,151 @@ static void handle_cmd(struct android_app* app, int32_t cmd) {
     }
 }
 
+// Cardboard event dispatch: forward app lifecycle + input to cb_engine.
+static void cb_dispatch_cmd(struct android_app* app, int32_t cmd) {
+    handle_cmd(app, cmd);
+    cb_on_cmd(&g_cb, cmd);
+}
+
+static int32_t cb_dispatch_input(struct android_app* app, AInputEvent* ev) {
+    (void)app;
+    return cb_on_input(&g_cb, ev);
+}
+
+// Feed sensor head pose (3DOF: no positional tracking) into the VR layer.
+static void update_vr_poses_cb(void) {
+    float yaw, pitch;
+    cb_head_yawpitch(&g_cb, &yaw, &pitch);
+    s_headX = s_headY = s_headZ = 0.0f;
+    s_headYawDeg = yaw;
+    VR_SetHeadPose(0, 0, 0, yaw, pitch);
+    // Per-eye offsets along the head's right axis (quat column 0).
+    GlMat4 head = glmat_pose(g_cb.quat[0], g_cb.quat[1], g_cb.quat[2],
+                             g_cb.quat[3], 0, 0, 0);
+    VR_SetEyeOffsets(-head.m[0] * 0.032f, -head.m[2] * 0.032f,
+                     head.m[0] * 0.032f, head.m[2] * 0.032f);
+    VR_SetAimPose(0, 0, 0);   // no controllers; aim follows view
+}
+
+// Shared doom tick + render-mode selection used by both backends.
+// Returns the player mobj when a level is active, NULL otherwise.
+typedef struct { mobj_t* mo; int worldMode; } FrameMode;
+
+static FrameMode doom_frame(void) {
+    FrameMode fm = {NULL, 0};
+    if (g_doomStarted && !g_doomExited) {
+        doomgeneric_Tick();
+    }
+
+    // Any GS_LEVEL frame (including attract demo playback) renders the
+    // true-3D world path; automap/menu overlays fall back to the software
+    // quad, and title/menus/intermissions go to the world-locked panel —
+    // 2D content is never glued to the head pose.
+    fm.mo = (g_doomStarted && gamestate == GS_LEVEL)
+            ? players[consoleplayer].mo : NULL;
+    int renderInLevel = (fm.mo != NULL);
+    fm.worldMode = renderInLevel && !automapactive && !menuactive;
+    {
+        static int lastMode = -1;
+        int mode = (fm.worldMode && glr_world_active(&g_renderer)) ? 3
+                 : fm.worldMode ? 2
+                 : renderInLevel ? 1 : 0;
+        if (mode != lastMode) {
+            if (mode == 3)
+                LOGI("QuestDOOM: RENDER_MODE: 3D_WORLD");
+            else if (mode == 2)
+                LOGI("QuestDOOM: RENDER_MODE: 3D_WORLD fallback -> "
+                     "SOFTWARE_QUAD, reason: %s",
+                     glr_world_fail(&g_renderer));
+            else if (mode == 1)
+                LOGI("QuestDOOM: RENDER_MODE: SOFTWARE_QUAD "
+                     "(automap/menu in-level)");
+            else
+                LOGI("QuestDOOM: RENDER_MODE: WORLD_PANEL (menu/title)");
+            lastMode = mode;
+        }
+        glr_set_immersive(&g_renderer, renderInLevel);
+        glr_set_world_mode(&g_renderer, fm.worldMode);
+    }
+
+    if (fm.worldMode && fm.mo) {
+        glr_world_frame_camera(&g_renderer,
+                               (float)fm.mo->x / 65536.0f,
+                               (float)fm.mo->y / 65536.0f);
+        glr_world_begin_frame(&g_renderer);
+    }
+    return fm;
+}
+
+// Per-eye world camera: doom camera pos + mo angle, mapped onto head pose.
+static void set_world_camera(int eye, mobj_t* mo) {
+    VR_SelectEye(eye);  // refresh per-eye vr_viewofs_*
+    float camX = (float)(mo->x + vr_viewofs_x) / 65536.0f;
+    float camY = (float)(mo->y + vr_viewofs_y) / 65536.0f;
+    float camZ = (float)(players[consoleplayer].viewz + vr_viewofs_z)
+                 / 65536.0f;
+    float moAng = (float)((double)mo->angle * (360.0 / 4294967296.0));
+    glr_world_camera(&g_renderer, s_headX, s_headY, s_headZ, s_headYawDeg,
+                     camX, camY, camZ, moAng);
+}
+
+static void start_doom(const char* iwad) {
+    g_doomStarted = true;
+    char arg0[] = "questdoom";
+    char argIwad[] = "-iwad";
+    char* argv[] = {arg0, argIwad, (char*)iwad, NULL};
+    doomgeneric_Create(3, argv);
+    VR_EnableStereo();  // dual D_Display passes, per-eye buffers
+    LOGI("doomgeneric created, stereo enabled");
+}
+
+// ---------------------------------------------------------------------------
+// Cardboard / generic phone loop (no OpenXR runtime)
+// ---------------------------------------------------------------------------
+
+static void cardboard_loop(struct android_app* app, const char* iwad) {
+    if (!cb_init(&g_cb, app, push_key, NULL)) {
+        LOGE("cardboard init failed (no EGL/GLES3 or no rotation sensor)");
+        return;
+    }
+    app->onAppCmd = cb_dispatch_cmd;
+    app->onInputEvent = cb_dispatch_input;
+
+    bool glReady = false;
+    while (!app->destroyRequested) {
+        cb_pump(&g_cb);
+        if (!cb_has_surface(&g_cb) || !g_cb.running) continue;
+
+        cb_make_current(&g_cb);
+        if (!glReady) {
+            if (!glr_init(&g_renderer)) {
+                LOGE("GL renderer init failed");
+                return;
+            }
+            // Native window framebuffer presents bottom-up: verified via the
+            // offscreen harness that the panel texture needs a V flip only.
+            glr_set_panel_uv_flip(&g_renderer, 0.f, 1.f);
+            glReady = true;
+        }
+
+        if (!g_doomStarted && iwad) start_doom(iwad);
+
+        update_vr_poses_cb();
+        FrameMode fm = doom_frame();
+
+        for (int eye = 0; eye < 2; eye++) {
+            if (fm.worldMode && fm.mo) set_world_camera(eye, fm.mo);
+            GlrEyeParams p;
+            cb_eye_params(&g_cb, eye, &p);
+            glr_draw_eye_params(&g_renderer, &p);
+        }
+        cb_swap(&g_cb);
+    }
+
+    glr_shutdown(&g_renderer);
+    cb_shutdown(&g_cb);
+}
+
 void android_main(struct android_app* app) {
     g_app = app;
     app->onAppCmd = handle_cmd;
@@ -254,9 +402,12 @@ void android_main(struct android_app* app) {
     }
 
     if (!xr_init(&g_xr, app)) {
-        LOGE("OpenXR initialization failed");
+        // No OpenXR runtime: generic Android/Cardboard path (phone sensors
+        // + window surface + split-screen stereo).
+        cardboard_loop(app, iwad);
         return;
     }
+    LOGI("QuestDOOM: BACKEND: OPENXR");
     if (!glr_init(&g_renderer)) {
         LOGE("GL renderer init failed");
         xr_shutdown(&g_xr);
@@ -278,15 +429,7 @@ void android_main(struct android_app* app) {
         }
 
         // Start DOOM once the session is running.
-        if (!g_doomStarted && iwad) {
-            g_doomStarted = true;
-            char arg0[] = "questdoom";
-            char argIwad[] = "-iwad";
-            char* argv[] = {arg0, argIwad, (char*)iwad, NULL};
-            doomgeneric_Create(3, argv);
-            VR_EnableStereo();  // dual D_Display passes, per-eye buffers
-            LOGI("doomgeneric created, stereo enabled");
-        }
+        if (!g_doomStarted && iwad) start_doom(iwad);
 
         // Locate views first so this frame's head/eye poses drive the tick.
         bool viewsOk = xr_locate_views(&g_xr);
@@ -301,62 +444,11 @@ void android_main(struct android_app* app) {
             glr_set_joints(&g_renderer, jpos, 52, jvis);
         }
 
-        if (g_doomStarted && !g_doomExited) {
-            doomgeneric_Tick();
-        }
-
-        // Any GS_LEVEL frame (including attract demo playback) renders the
-        // true-3D world path; automap/menu overlays fall back to the software
-        // quad, and title/menus/intermissions go to the world-locked panel —
-        // 2D content is never glued to the HMD.
-        mobj_t* mo = (g_doomStarted && gamestate == GS_LEVEL)
-                     ? players[consoleplayer].mo : NULL;
-        int renderInLevel = (mo != NULL);
-        int worldMode = renderInLevel && !automapactive && !menuactive;
-        {
-            static int lastMode = -1;
-            int mode = (worldMode && glr_world_active(&g_renderer)) ? 3
-                     : worldMode ? 2
-                     : renderInLevel ? 1 : 0;
-            if (mode != lastMode) {
-                if (mode == 3)
-                    LOGI("QuestDOOM: RENDER_MODE: 3D_WORLD");
-                else if (mode == 2)
-                    LOGI("QuestDOOM: RENDER_MODE: 3D_WORLD fallback -> "
-                         "SOFTWARE_QUAD, reason: %s",
-                         glr_world_fail(&g_renderer));
-                else if (mode == 1)
-                    LOGI("QuestDOOM: RENDER_MODE: SOFTWARE_QUAD "
-                         "(automap/menu in-level)");
-                else
-                    LOGI("QuestDOOM: RENDER_MODE: WORLD_PANEL (menu/title)");
-                lastMode = mode;
-            }
-            glr_set_immersive(&g_renderer, renderInLevel);
-            glr_set_world_mode(&g_renderer, worldMode);
-        }
-
-        if (worldMode && mo) {
-            glr_world_frame_camera(&g_renderer,
-                                   (float)mo->x / 65536.0f,
-                                   (float)mo->y / 65536.0f);
-            glr_world_begin_frame(&g_renderer);
-        }
+        FrameMode fm = doom_frame();
 
         if (viewsOk) {
             for (int eye = 0; eye < g_xr.viewCount; eye++) {
-                if (worldMode && mo) {
-                    VR_SelectEye(eye);  // refresh per-eye vr_viewofs_*
-                    float camX = (float)(mo->x + vr_viewofs_x) / 65536.0f;
-                    float camY = (float)(mo->y + vr_viewofs_y) / 65536.0f;
-                    float camZ = (float)(players[consoleplayer].viewz
-                                         + vr_viewofs_z) / 65536.0f;
-                    float moAng = (float)((double)mo->angle
-                                          * (360.0 / 4294967296.0));
-                    glr_world_camera(&g_renderer,
-                                     s_headX, s_headY, s_headZ, s_headYawDeg,
-                                     camX, camY, camZ, moAng);
-                }
+                if (fm.worldMode && fm.mo) set_world_camera(eye, fm.mo);
                 glr_draw_eye(&g_renderer, &g_xr, eye);
             }
         }
