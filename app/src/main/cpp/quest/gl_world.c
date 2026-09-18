@@ -615,6 +615,14 @@ void glw_begin_frame(GlWorld* w) {
     build_sprites(w, m);
 
     w->built = (m->vn > 0);
+
+    int key = numsubsectors * 100000 + numsegs;
+    if (w->built && key != w->lastLevelKey) {
+        w->lastLevelKey = key;
+        LOGI("glw: 3D world built verts=%d ranges=%d "
+             "(subsectors=%d segs=%d sectors=%d glTex=%d)",
+             m->vn, m->rn, numsubsectors, numsegs, numsectors, w->ntex);
+    }
 }
 
 // Sprite-facing camera (head-centred, doom map units). Call before

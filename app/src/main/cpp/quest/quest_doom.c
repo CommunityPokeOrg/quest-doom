@@ -240,6 +240,7 @@ void android_main(struct android_app* app) {
     if (filesDir) chdir(filesDir);
     LOGI("files dir: %s", filesDir ? filesDir : "(null)");
 
+    LOGI("=== quest-doom v0.2.5+3dworld starting ===");
     extract_assets_wads(app, filesDir ? filesDir : ".");
 
     char iwadPath[512];
@@ -312,12 +313,15 @@ void android_main(struct android_app* app) {
         int worldMode = inLevel && !automapactive && !menuactive;
         {
             static int lastMode = -1;
-            int mode = worldMode ? 2 : inLevel;
+            int mode = (worldMode && glr_world_active(&g_renderer)) ? 3
+                     : worldMode ? 2
+                     : inLevel ? 1 : 0;
             if (mode != lastMode) {
                 LOGI("render mode -> %s",
-                     mode == 2 ? "true-3D world geometry (in-level)"
-                     : mode    ? "immersive quad (automap/menu in-level)"
-                               : "world panel (menu/title)");
+                     mode == 3 ? "3D_WORLD (real geometry, in-level)"
+                     : mode == 2 ? "3D_WORLD pending geometry (quad fallback)"
+                     : mode == 1 ? "SOFTWARE_QUAD (automap/menu in-level)"
+                               : "WORLD_PANEL (menu/title)");
                 lastMode = mode;
             }
             glr_set_immersive(&g_renderer, inLevel);
