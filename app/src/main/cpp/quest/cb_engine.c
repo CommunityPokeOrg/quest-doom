@@ -236,7 +236,7 @@ void cb_swap(CbEngine* e) {
     eglSwapBuffers(e->display, e->surface);
     e->frameCount++;
     if ((e->frameCount % 240) == 1)
-        LOGI("cardboard: frame #%llu sensors=%s", e->frameCount,
+        LOGI("cardboard: frame #%lu sensors=%s", (unsigned long)e->frameCount,
              e->quatValid ? "ok" : "no-data");
 }
 
