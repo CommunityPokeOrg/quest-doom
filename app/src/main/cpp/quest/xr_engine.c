@@ -94,6 +94,33 @@ static bool egl_init(XrEngine* e) {
 // OpenXR instance/session
 // ---------------------------------------------------------------------------
 
+// The Khronos Android loader requires xrInitializeLoaderKHR (with the app
+// JavaVM + context) before any other xr* call. The symbol is intentionally
+// NOT exported by libopenxr_loader.so — it must be fetched via
+// xrGetInstanceProcAddr with XR_NULL_HANDLE.
+static bool xr_loader_init(XrEngine* e) {
+    PFN_xrInitializeLoaderKHR pfnInit = NULL;
+    XrResult r = xrGetInstanceProcAddr(XR_NULL_HANDLE,
+                                       "xrInitializeLoaderKHR",
+                                       (PFN_xrVoidFunction*)&pfnInit);
+    if (XR_FAILED(r) || pfnInit == NULL) {
+        LOGE("xrInitializeLoaderKHR unavailable: %s", xr_result_string(r));
+        return false;
+    }
+    XrLoaderInitInfoAndroidKHR init = {
+        .type = XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR,
+        .applicationVM = e->app->activity->vm,
+        .applicationContext = e->app->activity->clazz,
+    };
+    r = pfnInit((XrLoaderInitInfoBaseHeaderKHR*)&init);
+    if (XR_FAILED(r)) {
+        LOGE("xrInitializeLoaderKHR failed: %s", xr_result_string(r));
+        return false;
+    }
+    LOGI("OpenXR loader initialized");
+    return true;
+}
+
 static bool xr_create_instance(XrEngine* e) {
     XrInstanceCreateInfoAndroidKHR androidCi = {
         .type = XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR,
@@ -121,13 +148,16 @@ static bool xr_create_instance(XrEngine* e) {
     const char* extensions[] = {
         XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
         XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
-        XR_EXT_HAND_TRACKING_EXTENSION_NAME,
+        // enabled only when advertised — enabling an unsupported extension
+        // makes xrCreateInstance fail outright
+        e->handTrackingExt ? XR_EXT_HAND_TRACKING_EXTENSION_NAME : NULL,
     };
+    const uint32_t extEnabled = e->handTrackingExt ? 3 : 2;
 
     XrInstanceCreateInfo ci = {
         .type = XR_TYPE_INSTANCE_CREATE_INFO,
         .next = &androidCi,
-        .enabledExtensionCount = sizeof(extensions) / sizeof(extensions[0]),
+        .enabledExtensionCount = extEnabled,
         .enabledExtensionNames = extensions,
         .applicationInfo = {
             .applicationName = "Quest DOOM",
@@ -275,6 +305,7 @@ bool xr_init(XrEngine* e, struct android_app* app) {
     memset(e, 0, sizeof(*e));
     e->app = app;
     e->sessionState = XR_SESSION_STATE_UNKNOWN;
+    if (!xr_loader_init(e)) return false;
     if (!egl_init(e)) return false;
     if (!xr_create_instance(e)) return false;
     if (!xr_create_session(e)) return false;

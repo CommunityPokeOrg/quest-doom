@@ -21,12 +21,16 @@
 
     <application
         android:label="@string/app_name"
-        android:hasCode="true"
+        android:hasCode="false"
         android:allowBackup="false"
         tools:ignore="MissingApplicationIcon">
 
         <meta-data android:name="com.oculus.supportedDevices"
                    android:value="quest|quest2|questpro|quest3|quest3s" />
+        <!-- Keep 6DOF tracking + frame submission when the system VR overlay
+             steals focus (avoids tracking loss inside the boundary menus). -->
+        <meta-data android:name="com.oculus.vr.focusaware"
+                   android:value="true" />
 
         <activity
             android:name="android.app.NativeActivity"
