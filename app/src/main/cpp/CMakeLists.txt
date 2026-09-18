@@ -4,10 +4,9 @@ project(questdoom C)
 set(CMAKE_C_STANDARD 99)
 
 # --- android_native_app_glue (from NDK) ---
-add_library(native_app_glue STATIC
-    ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
-target_include_directories(native_app_glue PUBLIC
-    ${ANDROID_NDK}/sources/android/native_app_glue)
+# Compiled directly into the shared lib rather than a static archive: as a
+# static lib the linker drops ANativeActivity_onCreate since nothing in app
+# code references it, leaving NativeActivity unable to load the module.
 
 # --- vendored OpenXR loader (see app/src/main/jniLibs/) ---
 add_library(openxr_loader SHARED IMPORTED GLOBAL)
@@ -25,6 +24,7 @@ target_compile_options(doomcore PRIVATE -w -fno-strict-aliasing)
 
 # --- Quest platform layer ---
 add_library(questdoom SHARED
+    ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c
     quest/quest_doom.c
     quest/quest_stubs.c
     quest/xr_engine.c
@@ -43,7 +43,6 @@ find_library(lib_gles GLESv3)
 
 target_link_libraries(questdoom
     doomcore
-    native_app_glue
     openxr_loader
     ${lib_log}
     ${lib_android}
