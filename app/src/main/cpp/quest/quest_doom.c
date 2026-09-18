@@ -240,7 +240,7 @@ void android_main(struct android_app* app) {
     if (filesDir) chdir(filesDir);
     LOGI("files dir: %s", filesDir ? filesDir : "(null)");
 
-    LOGI("=== quest-doom v0.2.5+3dworld starting ===");
+    LOGI("=== quest-doom v0.2.6 (3D world, Y-flip fix) starting ===");
     extract_assets_wads(app, filesDir ? filesDir : ".");
 
     char iwadPath[512];
