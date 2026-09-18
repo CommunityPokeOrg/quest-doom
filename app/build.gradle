@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'org.communitypoke.questdoom'
+    compileSdk 34
+    ndkVersion "27.2.12479018"
+
+    defaultConfig {
+        applicationId "org.communitypoke.questdoom"
+        minSdk 29          // Quest 2 and newer (Horizon OS / Android 10+)
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+
+        ndk { abiFilters 'arm64-v8a' }   // Quest hardware is arm64
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_shared"
+                cppFlags ""
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+        debug {
+            debuggable true
+            jniDebuggable true
+        }
+    }
+}
