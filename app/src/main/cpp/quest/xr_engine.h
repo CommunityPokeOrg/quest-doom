@@ -59,6 +59,8 @@ typedef struct {
 
     XrFrameState frameState;
     bool frameBegun;
+
+    bool handTrackingExt;  // XR_EXT_hand_tracking advertised by runtime
 } XrEngine;
 
 // Returns false if OpenXR runtime is unavailable.

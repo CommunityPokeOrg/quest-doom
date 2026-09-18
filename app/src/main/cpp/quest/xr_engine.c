@@ -101,9 +101,27 @@ static bool xr_create_instance(XrEngine* e) {
         .applicationActivity = e->app->activity->clazz,
     };
 
+    // Check runtime extension support
+    uint32_t extCount = 0;
+    xrEnumerateInstanceExtensionProperties(NULL, 0, &extCount, NULL);
+    XrExtensionProperties* exts =
+        malloc(extCount * sizeof(XrExtensionProperties));
+    for (uint32_t i = 0; i < extCount; i++)
+        exts[i].type = XR_TYPE_EXTENSION_PROPERTIES;
+    xrEnumerateInstanceExtensionProperties(NULL, extCount, &extCount, exts);
+    for (uint32_t i = 0; i < extCount; i++) {
+        if (strcmp(exts[i].extensionName,
+                   XR_EXT_HAND_TRACKING_EXTENSION_NAME) == 0)
+            e->handTrackingExt = true;
+    }
+    free(exts);
+    LOGI("hand tracking extension: %s",
+         e->handTrackingExt ? "supported" : "not present");
+
     const char* extensions[] = {
         XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
         XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
+        XR_EXT_HAND_TRACKING_EXTENSION_NAME,
     };
 
     XrInstanceCreateInfo ci = {

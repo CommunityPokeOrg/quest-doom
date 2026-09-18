@@ -32,6 +32,7 @@
 #include "w_wad.h"
 
 #include "r_local.h"
+#include "vr_doom.h"
 
 #include "doomstat.h"
 
@@ -688,6 +689,10 @@ void R_DrawPSprite (pspdef_t* psp)
     vis->x1 = x1 < 0 ? 0 : x1;
     vis->x2 = x2 >= viewwidth ? viewwidth-1 : x2;	
     vis->scale = pspritescale<<detailshift;
+    // VR: counteract the view pitch shear so the weapon stays view-locked,
+    //  then apply the decoupled aim-pitch offset (weapon_yofs > 0 = aim up).
+    vis->texturemid += FixedDiv((vr_pitch_px<<FRACBITS) + vr_weapon_yofs,
+				vis->scale);
     
     if (flip)
     {

@@ -51,6 +51,7 @@
 #include "m_misc.h"
 #include "m_menu.h"
 #include "p_saveg.h"
+#include "vr_doom.h"
 
 #include "i_endoom.h"
 #include "i_joystick.h"
@@ -407,6 +408,8 @@ void doomgeneric_Tick()
     // frame syncronous IO operations
     I_StartFrame ();
 
+    VR_Tick (); // feed 6DOF head/aim pose into player angle & view offsets
+
     TryRunTics (); // will run at least one tic
 
     S_UpdateSounds (players[consoleplayer].mo);// move positional sounds
@@ -414,7 +417,18 @@ void doomgeneric_Tick()
     // Update display, next frame, with current state.
     if (screenvisible)
     {
-        D_Display ();
+	if (vr_stereo)
+	{
+	    // one full display pass per eye, each into its own buffer
+	    VR_SelectEye (0);
+	    D_Display ();
+	    VR_SelectEye (1);
+	    D_Display ();
+	}
+	else
+	{
+	    D_Display ();
+	}
     }
 }
 

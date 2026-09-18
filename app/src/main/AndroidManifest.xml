@@ -8,7 +8,13 @@
         android:name="android.hardware.vr.headtracking"
         android:version="1"
         android:required="true" />
+    <!-- Hand tracking is optional: the game falls back to Touch controllers
+         when it is unavailable or disabled. -->
+    <uses-feature
+        android:name="oculus.software.handtracking"
+        android:required="false" />
 
+    <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Needed only if you want to load WADs from shared storage (/sdcard). -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />

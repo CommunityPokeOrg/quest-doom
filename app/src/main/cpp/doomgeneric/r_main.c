@@ -34,6 +34,7 @@
 
 #include "r_local.h"
 #include "r_sky.h"
+#include "vr_doom.h"
 
 
 
@@ -831,7 +832,22 @@ void R_SetupFrame (player_t* player)
     extralight = player->extralight;
 
     viewz = player->viewz;
-    
+
+    // VR: 6DOF head offsets + per-eye stereo offset, and pitch Y-shear.
+    viewx += vr_viewofs_x;
+    viewy += vr_viewofs_y;
+    viewz += vr_viewofs_z;
+    if (vr_pitch_px)
+    {
+	centery = viewheight/2 + vr_pitch_px;
+	centeryfrac = centery<<FRACBITS;
+    }
+    else
+    {
+	centery = viewheight/2;
+	centeryfrac = centery<<FRACBITS;
+    }
+
     viewsin = finesine[viewangle>>ANGLETOFINESHIFT];
     viewcos = finecosine[viewangle>>ANGLETOFINESHIFT];
 	

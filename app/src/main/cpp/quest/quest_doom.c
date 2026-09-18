@@ -2,6 +2,7 @@
 //
 // android_main -> OpenXR session -> doomgeneric_Create -> per-frame:
 //   xrSyncActions -> doomgeneric_Tick -> upload framebuffer -> stereo panel render
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,14 +17,17 @@
 
 #include "../doomgeneric/doomgeneric.h"
 #include "../doomgeneric/doomkeys.h"
+#include "../doomgeneric/vr_doom.h"
 #include "xr_engine.h"
 #include "xr_input.h"
+#include "xr_hands.h"
 #include "gl_renderer.h"
 
 #define KEYQUEUE_SIZE 64
 
 static XrEngine g_xr;
 static XrInput g_input;
+static XrHands g_hands;
 static GlRenderer g_renderer;
 static struct android_app* g_app;
 static bool g_doomStarted = false;
@@ -127,9 +131,10 @@ void DG_Init(void) {
 }
 
 void DG_DrawFrame(void) {
-    // Called once per rendered game frame: upload framebuffer to the panel
-    // texture. EGL context is current on this thread.
-    glr_upload_frame(&g_renderer, (const uint32_t*)DG_ScreenBuffer,
+    // Called once per rendered game frame (twice per tick in stereo mode,
+    // once per eye): upload the current eye's framebuffer to its texture.
+    // EGL context is current on this thread.
+    glr_upload_frame(&g_renderer, vr_eye, (const uint32_t*)DG_ScreenBuffer,
                      DOOMGENERIC_RESX, DOOMGENERIC_RESY);
 }
 
@@ -151,6 +156,56 @@ int DG_GetKey(int* pressed, unsigned char* doomKey) {
 }
 
 void DG_SetWindowTitle(const char* title) { (void)title; }
+
+// ---------------------------------------------------------------------------
+// Pose extraction: quaternion -> yaw/pitch (forward = -Z in XR space)
+// ---------------------------------------------------------------------------
+
+static void quat_to_yawpitch(XrQuaternionf q, float* yawDeg, float* pitchDeg) {
+    float fx = -2.0f * (q.y * q.w + q.x * q.z);
+    float fy =  2.0f * (q.x * q.w - q.y * q.z);
+    float fz = -1.0f + 2.0f * (q.x * q.x + q.y * q.y);
+    *yawDeg = atan2f(-fx, -fz) * (180.0f / (float)M_PI);
+    *pitchDeg = asinf(fy > 1.0f ? 1.0f : (fy < -1.0f ? -1.0f : fy))
+                * (180.0f / (float)M_PI);
+}
+
+// Feed latest head/eye/aim poses into the doom side VR layer.
+static void update_vr_poses(void) {
+    // Head pose: locate the view space in local space.
+    XrSpaceLocation headLoc = {.type = XR_TYPE_SPACE_LOCATION};
+    if (XR_FAILED(xrLocateSpace(g_xr.viewSpace, g_xr.localSpace,
+                                g_xr.frameState.predictedDisplayTime,
+                                &headLoc)))
+        return;
+    if (!(headLoc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||
+        !(headLoc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+        return;
+
+    float yaw, pitch;
+    quat_to_yawpitch(headLoc.pose.orientation, &yaw, &pitch);
+    VR_SetHeadPose(headLoc.pose.position.x, headLoc.pose.position.y,
+                   headLoc.pose.position.z, yaw, pitch);
+
+    // Per-eye stereo offsets relative to the head centre.
+    if (g_xr.viewCount == 2) {
+        XrVector3f hp = headLoc.pose.position;
+        VR_SetEyeOffsets(g_xr.views[0].pose.position.x - hp.x,
+                         g_xr.views[0].pose.position.z - hp.z,
+                         g_xr.views[1].pose.position.x - hp.x,
+                         g_xr.views[1].pose.position.z - hp.z);
+    }
+
+    // Right-controller aim pose drives the decoupled weapon pitch.
+    XrPosef aim;
+    if (xri_get_aim_pose(&g_input, &g_xr, &aim)) {
+        float ayaw, apitch;
+        quat_to_yawpitch(aim.orientation, &ayaw, &apitch);
+        VR_SetAimPose(ayaw, apitch, 1);
+    } else {
+        VR_SetAimPose(0, 0, 0);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -196,7 +251,8 @@ void android_main(struct android_app* app) {
         xr_shutdown(&g_xr);
         return;
     }
-    xri_init(&g_input, &g_xr);  // non-fatal if it fails
+    xri_init(&g_input, &g_xr);   // non-fatal if it fails
+    xrh_init(&g_hands, &g_xr);   // hand tracking; falls back to controllers
 
     while (!app->destroyRequested && !g_xr.exitRequested) {
         xr_poll_events(&g_xr);
@@ -217,16 +273,28 @@ void android_main(struct android_app* app) {
             char argIwad[] = "-iwad";
             char* argv[] = {arg0, argIwad, (char*)iwad, NULL};
             doomgeneric_Create(3, argv);
-            LOGI("doomgeneric created");
+            VR_EnableStereo();  // dual D_Display passes, per-eye buffers
+            LOGI("doomgeneric created, stereo enabled");
         }
 
+        // Locate views first so this frame's head/eye poses drive the tick.
+        bool viewsOk = xr_locate_views(&g_xr);
+        if (viewsOk) update_vr_poses();
+
         xri_sync(&g_input, &g_xr, push_key, NULL);
+        xrh_update(&g_hands, &g_xr, push_key, NULL);
+        {
+            float jpos[52 * 3];
+            int jvis[2];
+            xrh_get_joints(&g_hands, jpos, jvis);
+            glr_set_joints(&g_renderer, jpos, 52, jvis);
+        }
 
         if (g_doomStarted && !g_doomExited) {
             doomgeneric_Tick();
         }
 
-        if (xr_locate_views(&g_xr)) {
+        if (viewsOk) {
             for (int eye = 0; eye < g_xr.viewCount; eye++)
                 glr_draw_eye(&g_renderer, &g_xr, eye);
         }
@@ -243,6 +311,7 @@ void android_main(struct android_app* app) {
     }
 
     glr_shutdown(&g_renderer);
+    xrh_shutdown(&g_hands);
     xri_shutdown(&g_input);
     xr_shutdown(&g_xr);
 }

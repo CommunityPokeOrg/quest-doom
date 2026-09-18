@@ -29,8 +29,11 @@ typedef struct {
     XrAction actRightStick;  // vec2
     XrAction actSelect;      // bool (simple profile select)
     XrAction actMenuSimple;  // bool (simple profile menu)
+    XrAction actAimPose;     // pose  (right controller aim)
     XrAction actHapticL;     // vibration
     XrAction actHapticR;
+
+    XrSpace aimSpace;        // action space for actAimPose, right hand
 
     XrPath pathHandLeft;
     XrPath pathHandRight;
@@ -47,6 +50,9 @@ typedef struct {
 
 bool xri_init(XrInput* in, XrEngine* e);
 void xri_sync(XrInput* in, XrEngine* e, XrKeyCallback cb, void* user);
+// Locate the right-hand aim pose in local space at the current frame's
+// predicted display time. Returns false when not tracked.
+bool xri_get_aim_pose(XrInput* in, XrEngine* e, XrPosef* outPose);
 void xri_haptic(XrInput* in, XrEngine* e, int hand, float amplitude,
                 XrDuration durationNs);
 void xri_shutdown(XrInput* in);

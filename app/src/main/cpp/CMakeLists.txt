@@ -29,6 +29,7 @@ add_library(questdoom SHARED
     quest/quest_stubs.c
     quest/xr_engine.c
     quest/xr_input.c
+    quest/xr_hands.c
     quest/gl_renderer.c)
 
 target_include_directories(questdoom PRIVATE

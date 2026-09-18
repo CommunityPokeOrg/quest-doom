@@ -31,6 +31,7 @@
 
 #include "r_local.h"
 #include "r_sky.h"
+#include "vr_doom.h"
 
 
 
@@ -131,10 +132,17 @@ R_MapPlane
     }
 #endif
 
+    // VR pitch shear: each screen row maps to a direction shifted by the
+    // pitch offset, so index yslope with the un-shifted row.
+    {
+	int sy = y - vr_pitch_px;
+	if (sy < 0) sy = 0;
+	else if (sy >= viewheight) sy = viewheight-1;
+
     if (planeheight != cachedheight[y])
     {
 	cachedheight[y] = planeheight;
-	distance = cacheddistance[y] = FixedMul (planeheight, yslope[y]);
+	distance = cacheddistance[y] = FixedMul (planeheight, yslope[sy]);
 	ds_xstep = cachedxstep[y] = FixedMul (distance,basexscale);
 	ds_ystep = cachedystep[y] = FixedMul (distance,baseyscale);
     }
@@ -143,6 +151,7 @@ R_MapPlane
 	distance = cacheddistance[y];
 	ds_xstep = cachedxstep[y];
 	ds_ystep = cachedystep[y];
+    }
     }
 	
     length = FixedMul (distance,distscale[x1]);

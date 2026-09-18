@@ -92,6 +92,8 @@ bool xri_init(XrInput* in, XrEngine* e) {
                       XR_ACTION_TYPE_VECTOR2F_INPUT, 1);
     ok &= make_action(in, &in->actRightStick, "rightstick", "Turn",
                       XR_ACTION_TYPE_VECTOR2F_INPUT, 2);
+    ok &= make_action(in, &in->actAimPose, "aimpose", "Aim Pose",
+                      XR_ACTION_TYPE_POSE_INPUT, 2);
     ok &= make_action(in, &in->actSelect, "select", "Select",
                       XR_ACTION_TYPE_BOOLEAN_INPUT, 3);
     ok &= make_action(in, &in->actMenuSimple, "menusimple", "Menu",
@@ -115,6 +117,7 @@ bool xri_init(XrInput* in, XrEngine* e) {
         {in->actSqueeze, "/user/hand/left/input/squeeze/value"},
         {in->actLeftStick, "/user/hand/left/input/thumbstick"},
         {in->actRightStick, "/user/hand/right/input/thumbstick"},
+        {in->actAimPose, "/user/hand/right/input/aim/pose"},
         {in->actHapticL, "/user/hand/left/output/haptic"},
         {in->actHapticR, "/user/hand/right/output/haptic"},
     };
@@ -139,7 +142,37 @@ bool xri_init(XrInput* in, XrEngine* e) {
         .countActionSets = 1,
         .actionSets = &in->actionSet,
     };
-    return XR_SUCCEEDED(xrAttachSessionActionSets(e->session, &attach));
+    if (XR_FAILED(xrAttachSessionActionSets(e->session, &attach)))
+        return false;
+
+    XrActionSpaceCreateInfo asi = {
+        .type = XR_TYPE_ACTION_SPACE_CREATE_INFO,
+        .action = in->actAimPose,
+        .subactionPath = in->pathHandRight,
+        .poseInActionSpace = {{0, 0, 0, 1}, {0, 0, 0}},
+    };
+    return XR_SUCCEEDED(xrCreateActionSpace(e->session, &asi, &in->aimSpace));
+}
+
+bool xri_get_aim_pose(XrInput* in, XrEngine* e, XrPosef* outPose) {
+    if (in->aimSpace == XR_NULL_HANDLE || !e->sessionRunning) return false;
+    XrActionStateGetInfo gi = {
+        .type = XR_TYPE_ACTION_STATE_GET_INFO,
+        .action = in->actAimPose,
+        .subactionPath = in->pathHandRight,
+    };
+    XrActionStatePose st = {.type = XR_TYPE_ACTION_STATE_POSE};
+    xrGetActionStatePose(e->session, &gi, &st);
+    if (!st.isActive) return false;
+    XrSpaceLocation loc = {.type = XR_TYPE_SPACE_LOCATION};
+    if (XR_FAILED(xrLocateSpace(in->aimSpace, e->localSpace,
+                                e->frameState.predictedDisplayTime, &loc)))
+        return false;
+    if (!(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||
+        !(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+        return false;
+    *outPose = loc.pose;
+    return true;
 }
 
 // --- state → key queue -------------------------------------------------------
